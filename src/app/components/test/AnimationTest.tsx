@@ -74,6 +74,7 @@ const AnimationControls = ({
 // Character model component
 const Character = ({
   modelPath,
+  animationsPath,
   position = [0, 0, 0],
   apiName,
   onAnimationsLoaded,
@@ -82,6 +83,7 @@ const Character = ({
   mixerRef
 }: {
   modelPath: string;
+  animationsPath?: string; // Optional path to a model with animations to use
   position?: [number, number, number];
   apiName: string;
   onAnimationsLoaded: (names: string[]) => void;
@@ -92,9 +94,13 @@ const Character = ({
   const actionsRef = useRef<{ [key: string]: THREE.AnimationAction }>({});
   const clockRef = useRef<THREE.Clock | null>(null);
   
-  // Load the model and its animations
+  // Load the model without animations first
   const result = useGLTF(modelPath, true);
-  const { scene, animations } = result;
+  const { scene } = result;
+  
+  // Load the animations from another model (if provided) or use the model's own animations
+  const animationsResult = animationsPath ? useGLTF(animationsPath, true) : null;
+  const animations = animationsPath && animationsResult ? animationsResult.animations : result.animations;
   
   // Set up animations
   const { actions, mixer } = useAnimations(animations, scene);
@@ -222,15 +228,21 @@ const Character = ({
 const AnimationTest = () => {
   const [warriorAnimationNames, setWarriorAnimationNames] = useState<string[]>([]);
   const [monsterAnimationNames, setMonsterAnimationNames] = useState<string[]>([]);
+  const [currentWarriorAnimation, setCurrentWarriorAnimation] = useState<string | null>(null);
+  const [currentMonsterAnimation, setCurrentMonsterAnimation] = useState<string | null>(null);
   const warriorMixerRef = useRef<THREE.AnimationMixer | null>(null);
   const monsterMixerRef = useRef<THREE.AnimationMixer | null>(null);
+  
+  // Flag to enable using monster animations on warrior model
+  const [useSharedAnimations, setUseSharedAnimations] = useState(false);
 
   // Initialize dat.gui
   useEffect(() => {
     const gui = new dat.GUI();
     const controls = {
       warriorSpeed: 1.0,
-      monsterSpeed: 1.0
+      monsterSpeed: 1.0,
+      useSharedAnimations: useSharedAnimations
     };
 
     // Add speed controls
@@ -247,6 +259,19 @@ const AnimationTest = () => {
       .onChange((value: number) => {
         if (monsterMixerRef.current) {
           monsterMixerRef.current.timeScale = value;
+        }
+      });
+
+    // Add toggle for shared animations
+    gui.add(controls, 'useSharedAnimations')
+      .name('Use Monster Animations on Warrior')
+      .onChange((value: boolean) => {
+        setUseSharedAnimations(value);
+        // We need to stop all animations when switching mode
+        if (currentWarriorAnimation) {
+          // @ts-ignore
+          window.warriorAnimations?.stop(currentWarriorAnimation);
+          setCurrentWarriorAnimation(null);
         }
       });
 
@@ -311,25 +336,26 @@ const AnimationTest = () => {
 
         <gridHelper args={[50, 50]} />
 
-        {/* Warrior Character */}
+        {/* Warrior Character - conditionally use monster animations */}
         <Character 
-          modelPath="/models/player/player_warrior2.glb"
+          modelPath="/models/player/1_1.glb"
+          animationsPath={useSharedAnimations ? "/models/player/2_1.glb" : undefined}
           position={[-2, 0, 0]}
           apiName="warriorAnimations"
           onAnimationsLoaded={setWarriorAnimationNames}
-          onAnimationStarted={() => {}}
-          onAnimationStopped={() => {}}
+          onAnimationStarted={setCurrentWarriorAnimation}
+          onAnimationStopped={() => setCurrentWarriorAnimation(null)}
           mixerRef={warriorMixerRef}
         />
 
         {/* Monster Character */}
         <Character 
-          modelPath="/models/player/player_monster.glb"
+          modelPath="/models/player/2_1.glb"
           position={[2, 0, 0]}
           apiName="monsterAnimations"
           onAnimationsLoaded={setMonsterAnimationNames}
-          onAnimationStarted={() => {}}
-          onAnimationStopped={() => {}}
+          onAnimationStarted={setCurrentMonsterAnimation}
+          onAnimationStopped={() => setCurrentMonsterAnimation(null)}
           mixerRef={monsterMixerRef}
         />
 
@@ -341,11 +367,48 @@ const AnimationTest = () => {
           maxDistance={20}
         />
       </Canvas>
+
+      {/* Animation Controls UI for Warrior */}
+      <div style={{ position: 'absolute', top: 0, left: '16px' }}>
+        <AnimationControls 
+          names={warriorAnimationNames}
+          currentAnimation={currentWarriorAnimation}
+          onPlay={(name) => {
+            // @ts-ignore - Using window for debugging
+            window.warriorAnimations?.play(name);
+          }}
+          onStop={() => {
+            if (currentWarriorAnimation) {
+              // @ts-ignore - Using window for debugging
+              window.warriorAnimations?.stop(currentWarriorAnimation);
+            }
+          }}
+        />
+      </div>
+
+      {/* Animation Controls UI for Monster */}
+      <div style={{ position: 'absolute', top: 0, right: '16px' }}>
+        <AnimationControls 
+          names={monsterAnimationNames}
+          currentAnimation={currentMonsterAnimation}
+          onPlay={(name) => {
+            // @ts-ignore - Using window for debugging
+            window.monsterAnimations?.play(name);
+          }}
+          onStop={() => {
+            if (currentMonsterAnimation) {
+              // @ts-ignore - Using window for debugging
+              window.monsterAnimations?.stop(currentMonsterAnimation);
+            }
+          }}
+        />
+      </div>
     </div>
   );
 };
 
-// Preload the model
-useGLTF.preload('/models/player/player_warrior.glb');
+// Preload the models
+useGLTF.preload('/models/player/1_1.glb');
+useGLTF.preload('/models/player/2_1.glb');
 
 export default AnimationTest; 
