@@ -12,9 +12,11 @@
     "@react-three/cannon": "^6.6.0",
     "@react-three/drei": "^10.0.4",
     "@react-three/fiber": "^9.1.0",
+    "@react-three/postprocessing": "^3.0.4",
     "@types/three": "^0.174.0",
     "lil-gui": "^0.20.0",
     "next": "15.2.2",
+    "postprocessing": "^6.37.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.174.0"

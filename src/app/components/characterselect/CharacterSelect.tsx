@@ -2,9 +2,13 @@
 
 import React, { useEffect, useState, useRef, useMemo, Suspense } from 'react';
 import { Canvas, useFrame, useLoader, extend, useThree } from '@react-three/fiber';
-import { OrbitControls, useGLTF, useAnimations, MeshReflectorMaterial, Plane, shaderMaterial } from '@react-three/drei';
+import { OrbitControls, useGLTF, useAnimations, MeshReflectorMaterial, Plane, shaderMaterial, Sky, Stars, Cloud, PerspectiveCamera } from '@react-three/drei';
+import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
 import * as THREE from 'three';
 import * as dat from 'lil-gui';
+// Updated import to include Bloom
+import { EffectComposer, N8AO, Bloom } from '@react-three/postprocessing';
+import { BlendFunction } from 'postprocessing';
 
 // Add CSS to handle lil-gui styling
 const additionalStyles = `
@@ -160,7 +164,8 @@ const Character = ({
   onAnimationsLoaded,
   onAnimationStarted,
   onAnimationStopped,
-  mixerRef
+  mixerRef,
+  glowIntensity = 0  // Add glowIntensity parameter with default 0
 }: {
   modelPath: string;
   animationsPath?: string; // Optional path to a model with animations to use
@@ -170,9 +175,12 @@ const Character = ({
   onAnimationStarted: (name: string) => void;
   onAnimationStopped: () => void;
   mixerRef: React.MutableRefObject<THREE.AnimationMixer | null>;
+  glowIntensity?: number; // Add optional glowIntensity parameter
 }) => {
   const actionsRef = useRef<{ [key: string]: THREE.AnimationAction }>({});
   const clockRef = useRef<THREE.Clock | null>(null);
+  const [glow, setGlow] = useState(glowIntensity);
+  const materialRefs = useRef<THREE.Material[]>([]);
   
   // Load the model without animations first
   const result = useGLTF(modelPath, true);
@@ -184,6 +192,47 @@ const Character = ({
   
   // Set up animations
   const { actions, mixer } = useAnimations(animations, scene);
+
+  // Store all materials for glow effect
+  useEffect(() => {
+    const materials: THREE.Material[] = [];
+    scene.traverse((child) => {
+      if (child instanceof THREE.Mesh && child.material) {
+        if (Array.isArray(child.material)) {
+          child.material.forEach(material => materials.push(material));
+        } else {
+          materials.push(child.material);
+        }
+      }
+    });
+    materialRefs.current = materials;
+  }, [scene]);
+
+  // Apply glow effect when glowIntensity changes
+  useEffect(() => {
+    setGlow(glowIntensity);
+  }, [glowIntensity]);
+
+  // Update material glow effect
+  useFrame(() => {
+    if (glow > 0) {
+      materialRefs.current.forEach(material => {
+        if (material instanceof THREE.MeshStandardMaterial) {
+          // Use a more intense cyan-blue glow color for better bloom effect
+          material.emissive.setRGB(0.0, 0.8, 1.5);
+          material.emissiveIntensity = glow * 2.5; // Increase intensity for better bloom
+        }
+      });
+      // Faster fade out to reduce the glow time after character switching
+      setGlow(prev => Math.max(0, prev - 0.16));
+    } else if (glow === 0) {
+      materialRefs.current.forEach(material => {
+        if (material instanceof THREE.MeshStandardMaterial) {
+          material.emissiveIntensity = 0;
+        }
+      });
+    }
+  });
 
   // Initialize mixer and clock
   useEffect(() => {
@@ -323,101 +372,7 @@ const Pedestal = ({ position = [0, 0, 0], radius = 1, height = 0.1, color = "#55
   );
 };
 
-// Room environment component
-const RoomEnvironment = () => {
-  return (
-    <group position={[0, 0, 2]}>
-      {/* Back wall */}
-      <mesh position={[0, 2, -8]} receiveShadow castShadow>
-        <boxGeometry args={[18, 6, 0.3]} />
-        <meshStandardMaterial color="#0e1a22" roughness={0.7} metalness={0.3} />
-      </mesh>
 
-      {/* Left wall */}
-      <mesh position={[-9, 2, -4]} rotation={[0, Math.PI / 2, 0]} receiveShadow>
-        <boxGeometry args={[8, 6, 0.3]} />
-        <meshStandardMaterial color="#0a1520" roughness={0.8} />
-      </mesh>
-      
-      {/* Right wall */}
-      <mesh position={[9, 2, -4]} rotation={[0, -Math.PI / 2, 0]} receiveShadow>
-        <boxGeometry args={[8, 6, 0.3]} />
-        <meshStandardMaterial color="#0a1520" roughness={0.8} />
-      </mesh>
-      
-      {/* Floor */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.1, -4]} receiveShadow>
-        <planeGeometry args={[18, 10]} />
-        <meshStandardMaterial color="#171f26" metalness={0.5} roughness={0.65} />
-      </mesh>
-      
-      {/* Ceiling */}
-      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 5, -4]} receiveShadow>
-        <planeGeometry args={[18, 10]} />
-        <meshStandardMaterial color="#0a1018" />
-      </mesh>
-
-      {/* Floor grid lines for cyberpunk feel */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.08, -4]}>
-        <planeGeometry args={[18, 10]} />
-        <meshBasicMaterial 
-          color="#00ff66" 
-          wireframe={true} 
-          transparent={true} 
-          opacity={0.15} 
-        />
-      </mesh>
-      
-      {/* Horizontal neon light strip on back wall */}
-      <mesh position={[0, 3.5, -7.8]} castShadow>
-        <boxGeometry args={[12, 0.1, 0.05]} />
-        <meshBasicMaterial color="#00ff88" />
-      </mesh>
-      
-      {/* Glowing panel on back wall */}
-      <mesh position={[-5, 2, -7.8]}>
-        <planeGeometry args={[3, 2]} />
-        <meshBasicMaterial color="#002211" />
-      </mesh>
-      
-      {/* Glowing panel on back wall */}
-      <mesh position={[5, 2, -7.8]}>
-        <planeGeometry args={[3, 2]} />
-        <meshBasicMaterial color="#110022" />
-      </mesh>
-      
-      {/* Additional decorative neon elements */}
-      <mesh position={[-8, 1.5, -6]} rotation={[0, Math.PI/4, 0]}>
-        <boxGeometry args={[0.05, 3, 0.05]} />
-        <meshBasicMaterial color="#00ffcc" />
-      </mesh>
-      
-      <mesh position={[8, 1.5, -6]} rotation={[0, -Math.PI/4, 0]}>
-        <boxGeometry args={[0.05, 3, 0.05]} />
-        <meshBasicMaterial color="#ff00cc" />
-      </mesh>
-      
-      {/* Pedestals with glow effect */}
-      <group position={[-2, 0, 0]}>
-        <Pedestal position={[0, 0, 0]} radius={1.7} height={0.2} color="#334455" />
-        {/* Glow ring under pedestal */}
-        <mesh position={[0, -0.095, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[1.7, 1.9, 32]} />
-          <meshBasicMaterial color="#00ff88" transparent={true} opacity={0.7} />
-        </mesh>
-      </group>
-      
-      <group position={[2, 0, 0]}>
-        <Pedestal position={[0, 0, 0]} radius={1.7} height={0.2} color="#553344" />
-        {/* Glow ring under pedestal */}
-        <mesh position={[0, -0.095, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[1.7, 1.9, 32]} />
-          <meshBasicMaterial color="#ff0088" transparent={true} opacity={0.7} />
-        </mesh>
-      </group>
-    </group>
-  );
-};
 
 // Create a proper skybox using cubemap textures
 const Skybox = () => {
@@ -786,61 +741,8 @@ const Environment = () => {
         </mesh>
       )}
       
-      {/* 3D environment elements to create depth */}
-      <group position={[0, 0, -10]}>
-        {/* Large central structure */}
-        <mesh position={[0, 3, 0]} castShadow receiveShadow>
-          <boxGeometry args={[4, 6, 1]} />
-          <meshStandardMaterial color="#151520" metalness={0.7} roughness={0.4} />
-        </mesh>
-        
-        {/* Left side structures */}
-        <mesh position={[-10, 2, -2]} rotation={[0, 0.3, 0]} castShadow receiveShadow>
-          <boxGeometry args={[3, 4, 2]} />
-          <meshStandardMaterial color="#101525" metalness={0.6} roughness={0.5} />
-        </mesh>
-        
-        <mesh position={[-8, 0.5, -1]} rotation={[0, -0.2, 0]} castShadow receiveShadow>
-          <cylinderGeometry args={[0.5, 0.5, 1, 8]} />
-          <meshStandardMaterial color="#152030" metalness={0.8} roughness={0.3} />
-        </mesh>
-        
-        {/* Right side structures */}
-        <mesh position={[10, 2, -2]} rotation={[0, -0.3, 0]} castShadow receiveShadow>
-          <boxGeometry args={[3, 4, 2]} />
-          <meshStandardMaterial color="#251015" metalness={0.6} roughness={0.5} />
-        </mesh>
-        
-        <mesh position={[8, 0.5, -1]} rotation={[0, 0.2, 0]} castShadow receiveShadow>
-          <cylinderGeometry args={[0.5, 0.5, 1, 8]} />
-          <meshStandardMaterial color="#301520" metalness={0.8} roughness={0.3} />
-        </mesh>
-        
-        {/* Floor platform elements */}
-        <mesh position={[0, -0.1, 0]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-          <planeGeometry args={[25, 15]} />
-          <meshStandardMaterial color="#0a0a10" metalness={0.5} roughness={0.8} />
-        </mesh>
-        
-        {/* Vertical light panels */}
-        <mesh position={[-12, 2, -4]} rotation={[0, 0.3, 0]}>
-          <planeGeometry args={[1, 4]} />
-          <meshStandardMaterial color="#1a3060" emissive="#0a2050" emissiveIntensity={0.5} />
-        </mesh>
-        
-        <mesh position={[12, 2, -4]} rotation={[0, -0.3, 0]}>
-          <planeGeometry args={[1, 4]} />
-          <meshStandardMaterial color="#601a30" emissive="#500a20" emissiveIntensity={0.5} />
-        </mesh>
-        
-        {/* Ceiling panel with lights */}
-        <mesh position={[0, 8, 0]} rotation={[Math.PI / 2, 0, 0]}>
-          <planeGeometry args={[15, 10]} />
-          <meshBasicMaterial color="#080810" />
-        </mesh>
-       
-      </group>
-      
+    
+
       {/* Ambient particles floating in the scene */}
       <Particles />
     </group>
@@ -1179,14 +1081,29 @@ const FightingGameEnvironment = () => {
           );
         })}
         
-        {/* Holographic vertical walls - very subtle */}
-        <mesh position={[0, 1.8, 0]}>
-          <cylinderGeometry args={[2.5, 2.5, 3.0, 32, 1, true]} />
-          <meshBasicMaterial 
-            color="#00aaff" 
-            transparent={true} 
-            opacity={0.05} 
-            side={THREE.DoubleSide} 
+        {/* Holographic vertical walls - with gradient fade to top */}
+        <mesh position={[0, 1.0, 0]}>
+          <cylinderGeometry args={[2, 2, 2.0, 5, 8, true]} />
+          <shaderMaterial 
+            transparent={true}
+            side={THREE.DoubleSide}
+            vertexShader={`
+              varying vec2 vUv;
+              void main() {
+                vUv = uv;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+              }
+            `}
+            fragmentShader={`
+              varying vec2 vUv;
+              void main() {
+                // Calculate the gradient based on height (v coordinate)
+                // v=0 is bottom, v=1 is top
+                float opacity = 0.25 * (1.0 - pow(vUv.y, 0.8));
+                vec3 color = vec3(0.0, 0.67, 1.0); // #00aaff
+                gl_FragColor = vec4(color, opacity);
+              }
+            `}
             depthWrite={false}
           />
         </mesh>
@@ -1532,43 +1449,16 @@ const CharacterInfoPanel = ({
         {/* Previous Button - Techie style */}
         <button 
           onClick={onPrevious}
-          style={{
-            background: 'rgba(0, 20, 10, 0.7)',
-            border: 'none',
-            color: 'white',
-            cursor: 'pointer',
-            width: '70px',
-            height: '70px',
-            position: 'relative',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '28px',
-            clipPath: 'polygon(30% 0%, 100% 0%, 100% 70%, 70% 100%, 0% 100%, 0% 30%)'
-          }}
+          className="nav-button nav-button-prev"
         >
           {/* Border overlay */}
-          <div style={{
-            position: 'absolute',
-            top: '2px',
-            left: '2px',
-            right: '2px',
-            bottom: '2px',
-            border: '1px solid #00aa66',
-            clipPath: 'polygon(30% 0%, 100% 0%, 100% 70%, 70% 100%, 0% 100%, 0% 30%)',
-            zIndex: 1
-          }} />
+          <div className="nav-button-border nav-button-prev" />
           
           {/* Glow effect */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            boxShadow: 'inset 0 0 10px rgba(0, 170, 85, 0.5)',
-            zIndex: 2
-          }} />
+          <div className="nav-button-glow" />
+          
+          {/* Shine effect */}
+          <div className="nav-button-shine" />
           
           {/* Tech corner indicator lights */}
           <div style={{
@@ -1688,43 +1578,16 @@ const CharacterInfoPanel = ({
         {/* Next Button - Techie style */}
         <button 
           onClick={onNext}
-          style={{
-            background: 'rgba(0, 20, 10, 0.7)',
-            border: 'none',
-            color: 'white',
-            cursor: 'pointer',
-            width: '70px',
-            height: '70px',
-            position: 'relative',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '28px',
-            clipPath: 'polygon(0% 0%, 70% 0%, 100% 30%, 100% 100%, 30% 100%, 0% 70%)'
-          }}
+          className="nav-button nav-button-next"
         >
           {/* Border overlay */}
-          <div style={{
-            position: 'absolute',
-            top: '2px',
-            left: '2px',
-            right: '2px',
-            bottom: '2px',
-            border: '1px solid #00aa66',
-            clipPath: 'polygon(0% 0%, 70% 0%, 100% 30%, 100% 100%, 30% 100%, 0% 70%)',
-            zIndex: 1
-          }} />
+          <div className="nav-button-border nav-button-next" />
           
           {/* Glow effect */}
-          <div style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            boxShadow: 'inset 0 0 10px rgba(0, 170, 85, 0.5)',
-            zIndex: 2
-          }} />
+          <div className="nav-button-glow" />
+          
+          {/* Shine effect */}
+          <div className="nav-button-shine" />
           
           {/* Tech corner indicator lights */}
           <div style={{
@@ -1798,6 +1661,105 @@ const CharacterInfoPanel = ({
               box-shadow: 0 0 10px rgba(255, 102, 170, 0.8);
             }
           }
+
+          @keyframes buttonHover {
+            0% {
+              background: rgba(0, 20, 10, 0.7);
+            }
+            100% {
+              background: linear-gradient(135deg, rgba(0, 170, 85, 0.4), rgba(0, 255, 136, 0.6));
+            }
+          }
+
+          .nav-button {
+            background: rgba(0, 20, 10, 0.7);
+            border: none;
+            color: white;
+            cursor: pointer;
+            width: 70px;
+            height: 70px;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 28px;
+            transition: all 0.2s ease-out;
+            overflow: hidden;
+          }
+
+          .nav-button:hover {
+            animation: buttonHover 0.2s forwards;
+            transform: scale(1.05);
+          }
+
+          .nav-button:hover .nav-button-border {
+            border-color: #00ff88;
+            box-shadow: 0 0 15px rgba(0, 255, 136, 0.5);
+          }
+
+          .nav-button:hover .nav-button-glow {
+            box-shadow: inset 0 0 20px rgba(0, 255, 136, 0.8);
+          }
+
+          .nav-button:hover .nav-button-shine {
+            animation: navShine 0.5s forwards;
+          }
+
+          @keyframes navShine {
+            0% {
+              transform: skew(-45deg) translateX(-150%);
+            }
+            100% {
+              transform: skew(-45deg) translateX(150%);
+            }
+          }
+
+          .nav-button-shine {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+              90deg, 
+              transparent, 
+              rgba(0, 255, 136, 0.4), 
+              transparent
+            );
+            transform: skew(-45deg) translateX(-150%);
+            z-index: 4;
+            pointer-events: none;
+          }
+
+          .nav-button-prev {
+            clip-path: polygon(30% 0%, 100% 0%, 100% 70%, 70% 100%, 0% 100%, 0% 30%);
+          }
+
+          .nav-button-next {
+            clip-path: polygon(0% 0%, 70% 0%, 100% 30%, 100% 100%, 30% 100%, 0% 70%);
+          }
+
+          .nav-button-border {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            right: 2px;
+            bottom: 2px;
+            border: 1px solid #00aa66;
+            z-index: 1;
+            transition: all 0.2s ease-out;
+          }
+
+          .nav-button-glow {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            box-shadow: inset 0 0 10px rgba(0, 170, 85, 0.5);
+            z-index: 2;
+            transition: all 0.2s ease-out;
+          }
         `}
       </style>
     </>
@@ -1847,8 +1809,78 @@ const sampleCharacters: CharacterData[] = [
     abilities: ['Barrage', 'Kinetic Shield', 'Ground Slam', 'Missile Volley'],
     modelPath: '/models/player/2_1.glb',
     animationsPath: '/models/player/2_1.glb'
+  },
+  {
+    id: 'char4',
+    name: 'Vanguard',
+    description: 'A versatile frontline fighter combining tactical prowess with cutting-edge weaponry. Equipped with adaptable combat systems for any situation.',
+    stats: {
+      health: 8,
+      attack: 8,
+      defense: 8,
+      speed: 7
+    },
+    abilities: ['Tactical Scan', 'Adaptive Shield', 'Combat Overdrive', 'Precision Strike'],
+    modelPath: '/models/player/2_2.glb',
+    animationsPath: '/models/player/2_1.glb'
   }
 ];
+
+// Create a separate component for camera animation
+const CameraAnimation = () => {
+  const { camera } = useThree();
+  const startPosition = useMemo(() => new THREE.Vector3(5, 6, 9), []);
+  const endPosition = useMemo(() => new THREE.Vector3(5, 3.2, 9), []);
+  const startTarget = useMemo(() => new THREE.Vector3(0, 3, 0), []);
+  const endTarget = useMemo(() => new THREE.Vector3(0, 1.8, 0), []);
+  const controlsRef = useRef<OrbitControlsImpl>(null);
+  const startTimeRef = useRef(0);
+  const isFirstFrame = useRef(true);
+  
+  // Set initial camera position
+  useEffect(() => {
+    camera.position.copy(startPosition);
+    if (controlsRef.current) {
+      controlsRef.current.target.copy(startTarget);
+    }
+  }, [camera, startPosition, startTarget]);
+
+  useFrame((state) => {
+    if (isFirstFrame.current) {
+      startTimeRef.current = state.clock.elapsedTime;
+      isFirstFrame.current = false;
+    }
+
+    const elapsed = state.clock.elapsedTime - startTimeRef.current;
+    const duration = 2.5; // Animation duration in seconds
+    const progress = Math.min(elapsed / duration, 1);
+
+    // Smooth easing function
+    const eased = 1 - Math.pow(1 - progress, 3);
+
+    // Interpolate camera position
+    camera.position.lerpVectors(startPosition, endPosition, eased);
+
+    // Interpolate target position
+    if (controlsRef.current) {
+      controlsRef.current.target.lerpVectors(startTarget, endTarget, eased);
+      controlsRef.current.update();
+    }
+  });
+
+  return (
+    <OrbitControls 
+      ref={controlsRef}
+      makeDefault 
+      target={[0, 3, 0]} // Start with initial target
+      maxPolarAngle={Math.PI / 2}
+      minDistance={4}
+      maxDistance={12}
+      enableDamping
+      dampingFactor={0.05}
+    />
+  );
+};
 
 // Main Character Selection component
 const CharacterSelect = () => {
@@ -1865,34 +1897,53 @@ const CharacterSelect = () => {
   
   // Add state to track if character is changing to handle model transitions
   const [isChangingCharacter, setIsChangingCharacter] = useState(false);
+  
+  // Add state for glow effect
+  const [glowIntensity, setGlowIntensity] = useState(0);
 
   // Navigation handlers
   const handlePrevious = () => {
-    setIsChangingCharacter(true);
+    // Start glowing the current character before changing
+    setGlowIntensity(2.0);
     
-    // Change character immediately
-    setSelectedCharacterIndex((prev) => 
-      prev === 0 ? sampleCharacters.length - 1 : prev - 1
-    );
-    
-    // Reset animation state after brief delay
+    // Let the character glow for a moment before switching
     setTimeout(() => {
-      setIsChangingCharacter(false);
-    }, 100);
+      // Hide the glowing character
+      setIsChangingCharacter(true);
+      
+      // Change character index
+      setSelectedCharacterIndex((prev) => 
+        prev === 0 ? sampleCharacters.length - 1 : prev - 1
+      );
+      
+      // After a brief moment, show the new character with glow
+      setTimeout(() => {
+        setIsChangingCharacter(false);
+        setGlowIntensity(2.0); // Start with glow
+      }, 150);
+    }, 350); // Ensure we see the glow before changing
   };
   
   const handleNext = () => {
-    setIsChangingCharacter(true);
+    // Start glowing the current character before changing
+    setGlowIntensity(2.0);
     
-    // Change character immediately
-    setSelectedCharacterIndex((prev) => 
-      (prev + 1) % sampleCharacters.length
-    );
-    
-    // Reset animation state after brief delay
+    // Let the character glow for a moment before switching
     setTimeout(() => {
-      setIsChangingCharacter(false);
-    }, 100);
+      // Hide the glowing character
+      setIsChangingCharacter(true);
+      
+      // Change character index
+      setSelectedCharacterIndex((prev) => 
+        (prev + 1) % sampleCharacters.length
+      );
+      
+      // After a brief moment, show the new character with glow
+      setTimeout(() => {
+        setIsChangingCharacter(false);
+        setGlowIntensity(2.0); // Start with glow
+      }, 150);
+    }, 350); // Ensure we see the glow before changing
   };
   
   const handleSelect = () => {
@@ -2254,7 +2305,7 @@ const CharacterSelect = () => {
         clipPath: 'polygon(0% 0%, 20px 0%, 40px 20px, calc(100% - 40px) 20px, calc(100% - 20px) 0%, 100% 0%, 100% calc(100% - 20px), calc(100% - 40px) 100%, 40px 100%, 20px calc(100% - 20px), 0% calc(100% - 20px), 0% 0%)'
       }}>
         <div className="techie-container" style={{ 
-          width: '100%', 
+          width: '100%',
           height: '100%', 
           position: 'relative',
           backgroundColor: '#051005',
@@ -2288,8 +2339,23 @@ const CharacterSelect = () => {
 
           <Canvas 
             shadows 
-            camera={{ position: [0, 2.2, 8], fov: 40 }}
+            camera={{ position: [5, 3.2, 9], fov: 40 }}
           >
+            {/* Add N8AO Effect */}
+            <EffectComposer>
+              <N8AO 
+                intensity={3}
+                aoRadius={2}
+                distanceFalloff={1}
+              />
+              <Bloom 
+                intensity={1.0}
+                luminanceThreshold={0.2}
+                luminanceSmoothing={0.9}
+                mipmapBlur
+              />
+            </EffectComposer>
+            
             {/* Dark background with slight color */}
             <color attach="background" args={['#050505']} />
             
@@ -2304,7 +2370,7 @@ const CharacterSelect = () => {
               position={[0, 8, 0]} 
               angle={0.5} 
               penumbra={0.8} 
-              intensity={6} 
+              intensity={8} 
               color="#00ff88" 
               castShadow 
               shadow-bias={-0.0001}
@@ -2315,7 +2381,7 @@ const CharacterSelect = () => {
               position={[-4, 4, 0]} 
               angle={0.4} 
               penumbra={0.7} 
-              intensity={7} 
+              intensity={9} 
               color="#00ff88" 
               castShadow 
               shadow-bias={-0.0001}
@@ -2326,7 +2392,7 @@ const CharacterSelect = () => {
               position={[4, 4, 0]} 
               angle={0.4} 
               penumbra={0.7} 
-              intensity={7} 
+              intensity={9} 
               color="#00ff88" 
               castShadow 
               shadow-bias={-0.0001}
@@ -2377,6 +2443,8 @@ const CharacterSelect = () => {
             {/* Reflective floor and environment */}
             <FightingGameEnvironment />
 
+            <CameraAnimation />
+            
             {/* Only render the character when not in transition */}
             {!isChangingCharacter && (
               <Character 
@@ -2389,18 +2457,9 @@ const CharacterSelect = () => {
                 onAnimationStarted={setCurrentWarriorAnimation}
                 onAnimationStopped={() => setCurrentWarriorAnimation(null)}
                 mixerRef={warriorMixerRef}
+                glowIntensity={glowIntensity}
               />
             )}
-
-            <OrbitControls 
-              makeDefault 
-              target={[0, 1, 0]}
-              maxPolarAngle={Math.PI / 2}
-              minDistance={4}
-              maxDistance={12}
-              enableDamping
-              dampingFactor={0.05}
-            />
           </Canvas>
 
           {/* Character Info Panel */}
@@ -2436,7 +2495,9 @@ const CharacterSelect = () => {
 
 // Preload the models
 useGLTF.preload('/models/player/1_1.glb');
+useGLTF.preload('/models/player/1_2.glb');
 useGLTF.preload('/models/player/2_1.glb');
+useGLTF.preload('/models/player/2_2.glb');
 useGLTF.preload('/models/environment/console.glb');
 useGLTF.preload('/models/environment/wallguns.glb');
 
