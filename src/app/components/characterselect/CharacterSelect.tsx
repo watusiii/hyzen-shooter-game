@@ -177,10 +177,31 @@ const Character = ({
   mixerRef: React.MutableRefObject<THREE.AnimationMixer | null>;
   glowIntensity?: number; // Add optional glowIntensity parameter
 }) => {
+  // Rifle adjustment parameters - these can be tweaked to get the right positioning
+  const RIFLE_ROTATION = {
+    x: Math.PI / 6,   // Forward/backward tilt
+    y: Math.PI / 1 +1.8,   // Left/right angle
+    z: -Math.PI / 2,  // Roll (horizontal/vertical orientation),
+  };
+  
+  const RIFLE_POSITION = {
+    x: 0.08,  // Left/right
+    y: -0.02, // Up/down
+    z: 0.15,  // Forward/backward
+  };
+  
   const actionsRef = useRef<{ [key: string]: THREE.AnimationAction }>({});
   const clockRef = useRef<THREE.Clock | null>(null);
   const [glow, setGlow] = useState(glowIntensity);
   const materialRefs = useRef<THREE.Material[]>([]);
+  const handBoneRef = useRef<THREE.Object3D | null>(null);
+  const rifleRef = useRef<THREE.Group | null>(null);
+  
+  // Track if animation is already running
+  const [isAnimating, setIsAnimating] = useState(false);
+  
+  // Load the rifle model
+  const { scene: rifleScene } = useGLTF('/models/weapon/rifle.glb', true);
   
   // Load the model without animations first
   const result = useGLTF(modelPath, true);
@@ -192,6 +213,120 @@ const Character = ({
   
   // Set up animations
   const { actions, mixer } = useAnimations(animations, scene);
+
+  // Create rifle instance as soon as the rifle model is loaded
+  useEffect(() => {
+    if (rifleScene) {
+      console.log('Rifle model loaded, creating instance immediately');
+      const rifleCopy = rifleScene.clone();
+      // Scale the rifle to look appropriate relative to character
+      rifleCopy.scale.set(0.7, 0.7, 0.7); 
+      rifleRef.current = rifleCopy;
+      console.log('Rifle reference set immediately', rifleRef.current);
+    }
+  }, [rifleScene]);
+
+  // Find the hand bone reference immediately when the scene is loaded
+  useEffect(() => {
+    if (!scene) {
+      console.warn('Character scene not loaded yet');
+      return;
+    }
+    
+    console.log('Searching for hand bone in scene...');
+    let foundBone = false;
+    
+    // Try direct bone search first
+    scene.traverse((object) => {
+      if (object.name === 'mixamorigRightHand') {
+        console.log('Found the mixamorigRightHand bone directly:', object);
+        handBoneRef.current = object;
+        foundBone = true;
+      }
+    });
+    
+    // If not found directly, try finding it in skinned meshes
+    if (!foundBone) {
+      console.log('Hand bone not found directly, checking skinned meshes...');
+      
+      scene.traverse((object) => {
+        if (object instanceof THREE.SkinnedMesh && object.skeleton) {
+          console.log(`Found skinned mesh: ${object.name} with ${object.skeleton.bones.length} bones`);
+          
+          object.skeleton.bones.forEach((bone, index) => {
+            if (bone.name === 'mixamorigRightHand') {
+              console.log(`Found mixamorigRightHand in skeleton at index ${index}:`, bone);
+              handBoneRef.current = bone;
+              foundBone = true;
+            }
+          });
+        }
+      });
+    }
+    
+    // Last resort - look for any hand bones
+    if (!foundBone) {
+      console.log('mixamorigRightHand not found, looking for any hand bones...');
+      
+      scene.traverse((object) => {
+        if (object instanceof THREE.Bone) {
+          const name = object.name.toLowerCase();
+          if (name.includes('right') && name.includes('hand')) {
+            console.log(`Found alternative right hand bone: ${object.name}`, object);
+            handBoneRef.current = object;
+            foundBone = true;
+          }
+        }
+      });
+    }
+    
+    if (!handBoneRef.current) {
+      console.warn('Could not find any right hand bone');
+    } else {
+      console.log('Final hand bone reference:', handBoneRef.current);
+    }
+  }, [scene]);
+  
+  // Track the hand bone and update the rifle position every frame
+  useFrame(({ clock }) => {
+    // Only log occasionally to avoid console spam
+    if (Math.floor(clock.getElapsedTime()) % 5 === 0 && !isAnimating) {
+      console.log('References check:', {
+        handBone: handBoneRef.current ? 'Found' : 'Missing', 
+        rifle: rifleRef.current ? 'Found' : 'Missing'
+      });
+    }
+    
+    // Update rifle position if both references exist
+    if (handBoneRef.current && rifleRef.current) {
+      if (!isAnimating) {
+        console.log('Starting rifle animation');
+        setIsAnimating(true);
+      }
+      
+      // Get the world position of the hand bone
+      const handPosition = new THREE.Vector3();
+      const handQuaternion = new THREE.Quaternion();
+      handBoneRef.current.getWorldPosition(handPosition);
+      handBoneRef.current.getWorldQuaternion(handQuaternion);
+      
+      // Update the rifle position
+      rifleRef.current.position.copy(handPosition);
+      
+      // Update rotation to match hand
+      rifleRef.current.quaternion.copy(handQuaternion);
+      
+      // Apply offset for better positioning
+      rifleRef.current.rotateZ(RIFLE_ROTATION.z);
+      rifleRef.current.rotateX(RIFLE_ROTATION.x);
+      rifleRef.current.rotateY(RIFLE_ROTATION.y);
+      
+      // Adjust position offsets
+      rifleRef.current.translateX(RIFLE_POSITION.x);
+      rifleRef.current.translateY(RIFLE_POSITION.y);
+      rifleRef.current.translateZ(RIFLE_POSITION.z);
+    }
+  });
 
   // Store all materials for glow effect
   useEffect(() => {
@@ -354,11 +489,20 @@ const Character = ({
   }, [actions, onAnimationStarted, onAnimationStopped, apiName]);
 
   return (
-    <primitive 
-      object={scene} 
-      position={position}
-      scale={[2, 2, 2]}
-    />
+    <>
+      {/* Character model */}
+      <primitive 
+        object={scene} 
+        position={position}
+        scale={[2, 2, 2]}
+      />
+      
+      {/* Always render the rifle model, but it will only be visible and positioned
+          correctly when rifleRef.current exists */}
+      {rifleRef.current && (
+        <primitive object={rifleRef.current} />
+      )}
+    </>
   );
 };
 
@@ -1550,7 +1694,6 @@ const CharacterInfoPanel = ({
             left: 0,
             right: 0,
             bottom: 0,
-            backgroundImage: 'url(/texture/circuit.png)',
             backgroundSize: 'cover',
             opacity: 0.1,
             zIndex: 1
@@ -1837,6 +1980,24 @@ const CameraAnimation = () => {
   const startTimeRef = useRef(0);
   const isFirstFrame = useRef(true);
   
+  // Add mouse tracking state
+  const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
+  
+  // Track mouse movement
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      // Normalize mouse position to range -1 to 1
+      const x = (e.clientX / window.innerWidth) * 2 - 1;
+      const y = (e.clientY / window.innerHeight) * 2 - 1;
+      setMousePosition({ x, y });
+    };
+    
+    window.addEventListener('mousemove', handleMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+    };
+  }, []);
+  
   // Set initial camera position
   useEffect(() => {
     camera.position.copy(startPosition);
@@ -1858,13 +2019,38 @@ const CameraAnimation = () => {
     // Smooth easing function
     const eased = 1 - Math.pow(1 - progress, 3);
 
-    // Interpolate camera position
-    camera.position.lerpVectors(startPosition, endPosition, eased);
-
-    // Interpolate target position
-    if (controlsRef.current) {
-      controlsRef.current.target.lerpVectors(startTarget, endTarget, eased);
-      controlsRef.current.update();
+    // Base camera position from intro animation
+    const basePosition = new THREE.Vector3();
+    basePosition.lerpVectors(startPosition, endPosition, eased);
+    
+    // Apply subtle mouse influence (after intro animation is complete)
+    if (progress >= 1) {
+      // Apply mouse movement with dampened effect
+      const mouseInfluenceX = mousePosition.x * 0.5; // Horizontal movement
+      const mouseInfluenceY = mousePosition.y * 0.3; // Vertical movement
+      
+      // Apply to camera position - subtle movement
+      camera.position.x = basePosition.x + mouseInfluenceX;
+      camera.position.y = basePosition.y - mouseInfluenceY; // Invert Y for natural feel
+      
+      // Also adjust camera target slightly
+      if (controlsRef.current) {
+        const baseTarget = new THREE.Vector3();
+        baseTarget.lerpVectors(startTarget, endTarget, eased);
+        
+        controlsRef.current.target.x = baseTarget.x + mouseInfluenceX * 0.5;
+        controlsRef.current.target.y = baseTarget.y - mouseInfluenceY * 0.5;
+        controlsRef.current.update();
+      }
+    } else {
+      // During intro animation, just use the base position
+      camera.position.copy(basePosition);
+      
+      // Interpolate target position
+      if (controlsRef.current) {
+        controlsRef.current.target.lerpVectors(startTarget, endTarget, eased);
+        controlsRef.current.update();
+      }
     }
   });
 
@@ -1878,6 +2064,8 @@ const CameraAnimation = () => {
       maxDistance={12}
       enableDamping
       dampingFactor={0.05}
+      enableZoom={false} // Disable zoom to maintain camera distance
+      enablePan={false}  // Disable panning to prevent camera drift
     />
   );
 };
@@ -1906,44 +2094,30 @@ const CharacterSelect = () => {
     // Start glowing the current character before changing
     setGlowIntensity(2.0);
     
-    // Let the character glow for a moment before switching
+    // Change character index immediately but with transition effect
+    setIsChangingCharacter(true);
     setTimeout(() => {
-      // Hide the glowing character
-      setIsChangingCharacter(true);
-      
-      // Change character index
       setSelectedCharacterIndex((prev) => 
         prev === 0 ? sampleCharacters.length - 1 : prev - 1
       );
-      
-      // After a brief moment, show the new character with glow
-      setTimeout(() => {
-        setIsChangingCharacter(false);
-        setGlowIntensity(2.0); // Start with glow
-      }, 150);
-    }, 350); // Ensure we see the glow before changing
+      setIsChangingCharacter(false);
+      setGlowIntensity(2.0); // Start with glow
+    }, 100); // Shortened transition time
   };
   
   const handleNext = () => {
     // Start glowing the current character before changing
     setGlowIntensity(2.0);
     
-    // Let the character glow for a moment before switching
+    // Change character index immediately but with transition effect
+    setIsChangingCharacter(true);
     setTimeout(() => {
-      // Hide the glowing character
-      setIsChangingCharacter(true);
-      
-      // Change character index
       setSelectedCharacterIndex((prev) => 
         (prev + 1) % sampleCharacters.length
       );
-      
-      // After a brief moment, show the new character with glow
-      setTimeout(() => {
-        setIsChangingCharacter(false);
-        setGlowIntensity(2.0); // Start with glow
-      }, 150);
-    }, 350); // Ensure we see the glow before changing
+      setIsChangingCharacter(false);
+      setGlowIntensity(2.0); // Start with glow
+    }, 100); // Shortened transition time
   };
   
   const handleSelect = () => {
@@ -2341,26 +2515,28 @@ const CharacterSelect = () => {
             shadows 
             camera={{ position: [5, 3.2, 9], fov: 40 }}
           >
-            {/* Add N8AO Effect */}
+            {/* Temporarily disable post-processing effects */}
+            
             <EffectComposer>
-              <N8AO 
+              {/* <N8AO 
                 intensity={3}
                 aoRadius={2}
                 distanceFalloff={1}
-              />
-              <Bloom 
+              /> */}
+              {/* <Bloom 
                 intensity={1.0}
                 luminanceThreshold={0.2}
                 luminanceSmoothing={0.9}
                 mipmapBlur
-              />
+              /> */}
             </EffectComposer>
+           
             
             {/* Dark background with slight color */}
             <color attach="background" args={['#050505']} />
             
-            {/* Scene fog for depth - increased density for moodier atmosphere */}
-            <fog attach="fog" args={['#090a0f', 15, 35]} />
+            {/* Remove fog to improve performance and stability */}
+            {/* <fog attach="fog" args={['#090a0f', 15, 35]} /> */}
             
             {/* Reduced ambient light for darker mood */}
             <ambientLight intensity={0.4} color="#132013" />
