@@ -240,76 +240,76 @@ const AnimationTest = () => {
   useEffect(() => {
     const gui = new dat.GUI();
     const controls = {
-      warriorSpeed: 1.0,
-      monsterSpeed: 1.0,
+      player1Speed: 1.0,
+      player2Speed: 1.0,
       useSharedAnimations: useSharedAnimations
     };
 
-    // Add speed controls
-    gui.add(controls, 'warriorSpeed', 0, 2)
-      .name('Warrior Speed')
+    // Add speed controls with updated labels
+    gui.add(controls, 'player1Speed', 0, 2)
+      .name('Player 1 Speed')
       .onChange((value: number) => {
         if (warriorMixerRef.current) {
           warriorMixerRef.current.timeScale = value;
         }
       });
 
-    gui.add(controls, 'monsterSpeed', 0, 2)
-      .name('Monster Speed')
+    gui.add(controls, 'player2Speed', 0, 2)
+      .name('Player 2 Speed')
       .onChange((value: number) => {
         if (monsterMixerRef.current) {
           monsterMixerRef.current.timeScale = value;
         }
       });
 
-    // Add toggle for shared animations
+    // Add toggle for shared animations with updated label
     gui.add(controls, 'useSharedAnimations')
-      .name('Use Monster Animations on Warrior')
+      .name('Use Player 2 Animations on Player 1')
       .onChange((value: boolean) => {
         setUseSharedAnimations(value);
         // We need to stop all animations when switching mode
         if (currentWarriorAnimation) {
           // @ts-ignore
-          window.warriorAnimations?.stop(currentWarriorAnimation);
+          window.player1Animations?.stop(currentWarriorAnimation);
           setCurrentWarriorAnimation(null);
         }
       });
 
-    // Create Animation folders
-    const warriorFolder = gui.addFolder('Warrior Animations');
-    warriorFolder.open();
+    // Create Animation folders with updated labels
+    const player1Folder = gui.addFolder('Player 1 Animations');
+    player1Folder.open();
 
-    const monsterFolder = gui.addFolder('Monster Animations');
-    monsterFolder.open();
+    const player2Folder = gui.addFolder('Player 2 Animations');
+    player2Folder.open();
 
-    // Add warrior animation toggles
-    const warriorToggles: { [key: string]: boolean } = {};
+    // Add player 1 animation toggles
+    const player1Toggles: { [key: string]: boolean } = {};
     warriorAnimationNames.forEach(name => {
-      warriorToggles[name] = false;
-      warriorFolder.add(warriorToggles, name)
+      player1Toggles[name] = false;
+      player1Folder.add(player1Toggles, name)
         .onChange((value: boolean) => {
           if (value) {
             // @ts-ignore - Using window for debugging
-            window.warriorAnimations?.play(name);
+            window.player1Animations?.play(name);
           } else {
             // @ts-ignore - Using window for debugging
-            window.warriorAnimations?.stop(name);
+            window.player1Animations?.stop(name);
           }
         });
     });
 
-    // Add monster animation toggles
-    const monsterToggles: { [key: string]: boolean } = {};
+    // Add player 2 animation toggles
+    const player2Toggles: { [key: string]: boolean } = {};
     monsterAnimationNames.forEach(name => {
-      monsterToggles[name] = false;
-      monsterFolder.add(monsterToggles, name)
+      player2Toggles[name] = false;
+      player2Folder.add(player2Toggles, name)
         .onChange((value: boolean) => {
           if (value) {
             // @ts-ignore - Using window for debugging
-            window.monsterAnimations?.play(name);
+            window.player2Animations?.play(name);
           } else {
             // @ts-ignore - Using window for debugging
-            window.monsterAnimations?.stop(name);
+            window.player2Animations?.stop(name);
           }
         });
     });
@@ -322,37 +322,55 @@ const AnimationTest = () => {
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
       <Canvas shadows camera={{ position: [5, 5, 5], fov: 50 }}>
-        <ambientLight intensity={0.5} />
+        {/* Increased ambient light for better overall brightness */}
+        <ambientLight intensity={0.8} />
+        
+        {/* Main directional light with increased intensity */}
         <directionalLight
           position={[10, 10, 10]}
-          intensity={1}
+          intensity={2}
           castShadow
         />
 
+        {/* Added fill light from front */}
+        <directionalLight
+          position={[0, 2, 8]}
+          intensity={1.5}
+          color="#ccffdd"
+        />
+
+        {/* Added rim light from behind */}
+        <directionalLight
+          position={[0, 2, -8]}
+          intensity={1.2}
+          color="#00cccc"
+        />
+
+        {/* Ground plane with slightly lighter color */}
         <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
           <planeGeometry args={[50, 50]} />
-          <meshStandardMaterial color="#303030" />
+          <meshStandardMaterial color="#404040" />
         </mesh>
 
         <gridHelper args={[50, 50]} />
 
-        {/* Warrior Character - conditionally use monster animations */}
+        {/* Player 1 Character */}
         <Character 
           modelPath="/models/player/1_1.glb"
           animationsPath={useSharedAnimations ? "/models/player/2_1.glb" : undefined}
           position={[-2, 0, 0]}
-          apiName="warriorAnimations"
+          apiName="player1Animations"
           onAnimationsLoaded={setWarriorAnimationNames}
           onAnimationStarted={setCurrentWarriorAnimation}
           onAnimationStopped={() => setCurrentWarriorAnimation(null)}
           mixerRef={warriorMixerRef}
         />
 
-        {/* Monster Character */}
+        {/* Player 2 Character */}
         <Character 
           modelPath="/models/player/2_1.glb"
           position={[2, 0, 0]}
-          apiName="monsterAnimations"
+          apiName="player2Animations"
           onAnimationsLoaded={setMonsterAnimationNames}
           onAnimationStarted={setCurrentMonsterAnimation}
           onAnimationStopped={() => setCurrentMonsterAnimation(null)}
@@ -368,37 +386,37 @@ const AnimationTest = () => {
         />
       </Canvas>
 
-      {/* Animation Controls UI for Warrior */}
-      <div style={{ position: 'absolute', top: 0, left: '16px' }}>
+      {/* Animation Controls UI for Player 1 */}
+      <div style={{ position: 'absolute', top: '20px', left: '16px' }}>
         <AnimationControls 
           names={warriorAnimationNames}
           currentAnimation={currentWarriorAnimation}
           onPlay={(name) => {
             // @ts-ignore - Using window for debugging
-            window.warriorAnimations?.play(name);
+            window.player1Animations?.play(name);
           }}
           onStop={() => {
             if (currentWarriorAnimation) {
               // @ts-ignore - Using window for debugging
-              window.warriorAnimations?.stop(currentWarriorAnimation);
+              window.player1Animations?.stop(currentWarriorAnimation);
             }
           }}
         />
       </div>
 
-      {/* Animation Controls UI for Monster */}
-      <div style={{ position: 'absolute', top: 0, right: '16px' }}>
+      {/* Animation Controls UI for Player 2 */}
+      <div style={{ position: 'absolute', top: '20px', right: '16px' }}>
         <AnimationControls 
           names={monsterAnimationNames}
           currentAnimation={currentMonsterAnimation}
           onPlay={(name) => {
             // @ts-ignore - Using window for debugging
-            window.monsterAnimations?.play(name);
+            window.player2Animations?.play(name);
           }}
           onStop={() => {
             if (currentMonsterAnimation) {
               // @ts-ignore - Using window for debugging
-              window.monsterAnimations?.stop(currentMonsterAnimation);
+              window.player2Animations?.stop(currentMonsterAnimation);
             }
           }}
         />
