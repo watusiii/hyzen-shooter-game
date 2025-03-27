@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle, ForwardRefRenderFunction } from 'react';
+import React, { useRef, useEffect, useState, forwardRef, useImperativeHandle, ForwardRefRenderFunction, useCallback } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
@@ -9,7 +9,8 @@ import * as dat from 'lil-gui';
 // Export interface for the ref
 export interface CharacterControllerRef {
   characterRef: THREE.Group | THREE.Mesh | null;
-  playAnimation: (name: string) => void;
+  playAnimation: (name: string, isManualSelection?: boolean) => void;
+  shoot: () => void;
 }
 
 interface CharacterControllerProps {
@@ -38,13 +39,13 @@ interface CharacterControllerProps {
  * This combines both the model and controller in one component for simplicity
  */
 const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, CharacterControllerProps> = ({
-  modelPath = '/models/player/2_1.glb',
+  modelPath = '/models/player/2_2.glb',
   animationsPath = '/models/player/animation_host.glb', // Using the animation host GLB file instead of FBX
   position = [0, 0, 0],
   scale = 2,
   speed = 5,
   enableKeyboardControls = true,
-  defaultAnimation = 'RifleRun',
+  defaultAnimation = 'RifleIdle',
   debug = false,
   weaponPath = '/models/weapon/rifle.glb'
 }, ref) => {
@@ -54,6 +55,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   // Reference for weapon
   const rifleRef = useRef<THREE.Group | null>(null);
   const handBoneRef = useRef<THREE.Object3D | null>(null);
+  // Reference for the gun muzzle
+  const muzzleRef = useRef<THREE.Object3D | null>(null);
+  // Reference for shell ejection point
+  const ejectorRef = useRef<THREE.Object3D | null>(null);
+  
+  // Add ref for sound effects
+  const rifleFireSoundRef = useRef<HTMLAudioElement | null>(null);
   
   // State for movement direction
   const [moveDirection, setMoveDirection] = useState({ 
@@ -75,6 +83,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   // State for animation
   const [availableAnimations, setAvailableAnimations] = useState<string[]>([]);
   const [currentAnimation, setCurrentAnimation] = useState<string | null>(null);
+  const [isManualAnimationActive, setIsManualAnimationActive] = useState(false);
   const mixerRef = useRef<THREE.AnimationMixer | null>(null);
   const actionsRef = useRef<{ [key: string]: THREE.AnimationAction }>({});
   const clockRef = useRef<THREE.Clock | null>(null);
@@ -125,23 +134,31 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   // Add state for rifle offsets
   const [rifleOffsets, setRifleOffsets] = useState({
     RifleRun: {
-      position: { x: 0.06, y: 0, z: 0.35 },
-      rotation: { x: Math.PI / 6, y: Math.PI / 1 + 1.8, z: -Math.PI / 2 }
+      position: { x: 0.06, y: 0.05, z: 0.35 },
+      rotation: { x: Math.PI / 8, y: Math.PI / 1 + 1.8, z: -Math.PI / 2 }
     },
     RifleIdle: {
-      position: { x: 0.08, y: -0.02, z: 0.15 },
+      position: { x: 0.08, y: 0.0, z: 0.15 },
       rotation: { 
-        x: -18 * (Math.PI / 180),  // -18 degrees
-        y: -90 * (Math.PI / 180),  // -90 degrees
-        z: -100 * (Math.PI / 180)  // -100 degrees
+        x: -5 * (Math.PI / 180),
+        y: -90 * (Math.PI / 180),
+        z: -100 * (Math.PI / 180)
+      }
+    },
+    "Backwards Rifle Run": {
+      position: { x: 0.07, y: 0.03, z: 0.3 },
+      rotation: { 
+        x: Math.PI / 10,
+        y: Math.PI / 1 + 1,
+        z: -Math.PI / 2
       }
     }
   });
   
   // Default offsets for any animation not in the mapping
   const DEFAULT_OFFSETS = {
-    position: { x: 0.06, y: 0, z: 0.35 },
-    rotation: { x: Math.PI / 6, y: Math.PI / 1 + 1.8, z: -Math.PI / 2 }
+    position: { x: 0.06, y: 0.02, z: 0.35 },
+    rotation: { x: Math.PI / 16, y: Math.PI / 1 + 1.8, z: -Math.PI / 2 }
   };
   
   // Get camera from useThree
@@ -152,6 +169,59 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   
   // Add state for GUI visibility
   const [guiVisible, setGuiVisible] = useState(true);
+  
+  // Add state for smooth mouse direction tracking
+  const smoothedScreenDirectionRef = useRef(new THREE.Vector2());
+  
+  // Remove the history state
+  const [aimHistory, setAimHistory] = useState<{
+    horizontalAngle: number[],
+    verticalAngle: number[]
+  }>({
+    horizontalAngle: Array(6).fill(0),
+    verticalAngle: Array(6).fill(0)
+  });
+  
+  // Add state for handling shooting
+  const [isShooting, setIsShooting] = useState(false);
+  const [lastShotTime, setLastShotTime] = useState(0);
+  const [isMouseDown, setIsMouseDown] = useState(false);
+  const shootIntervalRef = useRef<number | null>(null);
+  const isMouseDownRef = useRef(false); // Add a ref for tracking mouse state without rerender issues
+  
+  // Add weapon configuration state
+  const [weaponConfig, setWeaponConfig] = useState({
+    isAutomatic: true,
+    fireRate: 10, // Shots per second
+    muzzleFlashDuration: 50, // ms
+    recoil: 0.02,
+    maxRecoil: 0.1,
+    recoilRecovery: 0.01
+  });
+  
+  // Add recoil tracking
+  const currentRecoilRef = useRef(0);
+  
+  // Add ref for muzzle flash
+  const muzzleFlashRef = useRef<THREE.Mesh | null>(null);
+  const muzzleFlashLightRef = useRef<THREE.PointLight | null>(null);
+  const [muzzleFlashVisible, setMuzzleFlashVisible] = useState(false);
+  
+  // Add ref for shell casings
+  const shellCasingsRef = useRef<THREE.InstancedMesh | null>(null);
+  const maxShells = 30; // Maximum number of shell casings visible at once
+  const shellMatrixRef = useRef<THREE.Matrix4[]>([]);
+  const shellSpeedRef = useRef<{x: number, y: number, z: number}[]>([]);
+  const shellLifeRef = useRef<number[]>([]);
+  const nextShellIndexRef = useRef(0);
+  
+  // Add state for shell casings
+  const [shellCasings, setShellCasings] = useState<{
+    position: THREE.Vector3;
+    rotation: THREE.Euler;
+    velocity: { x: number, y: number, z: number };
+    lifetime: number;
+  }[]>([]);
   
   // Log model details
   useEffect(() => {
@@ -214,6 +284,10 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     console.log('Animation host path:', animationsPath);
     console.log('Animations found:', animations?.length || 0);
     console.log('Animation names:', animations?.map(clip => clip.name) || []);
+    
+    // Check specifically for Rifle Fire animation
+    const hasFiringAnimation = animations?.some(clip => clip.name === 'Rifle Fire');
+    console.log('Rifle Fire animation available:', hasFiringAnimation ? 'Yes' : 'No');
   }, [animations, animationsPath]);
   
   // Set up animations - IMPORTANT FIX: Using original scene instead of clone
@@ -287,9 +361,11 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // Play default animation if available
     if (defaultAnimation && actions[defaultAnimation]) {
       playAnimation(defaultAnimation);
+      console.log(`Playing default animation: ${defaultAnimation}`);
     } else if (animationNames.length > 0) {
       // Play the first animation if default not available
       playAnimation(animationNames[0]);
+      console.log(`Default animation not available, playing first animation: ${animationNames[0]}`);
     }
     
     return () => {
@@ -300,13 +376,24 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   }, [animations, actions, mixer, defaultAnimation]);
   
   // Function to play an animation
-  const playAnimation = (name: string) => {
-    console.log(`Attempting to play animation: ${name}`);
+  const playAnimation = (name: string, isManualSelection = false) => {
+    console.log(`Attempting to play animation: ${name}, Manual selection: ${isManualSelection}`);
     
     if (!actions || !actions[name]) {
       console.error(`No action found for animation: ${name}`);
       console.log('Available actions:', actions ? Object.keys(actions) : 'none');
       return;
+    }
+    
+    // Track whether this animation was manually selected
+    if (isManualSelection) {
+      setIsManualAnimationActive(true);
+      
+      // For manually selected animations, set a timeout to allow movement animations again
+      // after a reasonable preview period (5 seconds)
+      setTimeout(() => {
+        setIsManualAnimationActive(false);
+      }, 5000);
     }
     
     // Stop current animation if any
@@ -319,7 +406,50 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     console.log(`Setting up animation: ${name}`);
     action.reset();
     action.setEffectiveWeight(1.0);
-    action.setLoop(THREE.LoopRepeat, Infinity);
+    
+    // Determine if this animation should be looped
+    // Add special case handling for any animations that shouldn't loop
+    const nonLoopingAnimations = ['Rifle Fire', 'RifleJump']; // Animations that should play once
+    
+    if (nonLoopingAnimations.includes(name)) {
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      
+      // For non-looping animations, set up a callback when they finish
+      // to return to idle or previous animation, but only if not currently shooting
+      action.reset()
+        .setEffectiveTimeScale(1)
+        .setEffectiveWeight(1)
+        .fadeIn(0.2);
+      
+      // Setup the finish listener
+      const mixer = action.getMixer();
+      const onFinished = () => {
+        // Don't return to idle if this is the fire animation and we're still shooting
+        if (name === 'Rifle Fire' && isMouseDownRef.current && weaponConfig.isAutomatic) {
+          console.log('Still shooting, not returning to idle');
+          // Just remove the listener but don't switch animations
+          mixer.removeEventListener('finished', onFinished);
+          return;
+        }
+        
+        // Return to idle animation when finished (for other non-looping animations)
+        if (actions['RifleIdle']) {
+          playAnimation('RifleIdle');
+        }
+        // Remove the listener
+        mixer.removeEventListener('finished', onFinished);
+        // Reset manual animation flag
+        setIsManualAnimationActive(false);
+      };
+      
+      mixer.addEventListener('finished', onFinished);
+    } else {
+      // For looping animations
+      action.setLoop(THREE.LoopRepeat, Infinity);
+      action.clampWhenFinished = false;
+    }
+    
     action.fadeIn(0.2);
     action.play();
     console.log(`Animation started: ${name}`);
@@ -337,18 +467,12 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         case 'KeyA': 
         case 'ArrowLeft': 
           setMoveDirection(prev => ({ ...prev, x: -1 })); 
-          // Change animation to run if not already running
-          if (currentAnimation !== 'RifleRun' && actions && actions['RifleRun']) {
-            playAnimation('RifleRun');
-          }
+          // No longer directly setting animation here, it's handled in useFrame
           break;
         case 'KeyD': 
         case 'ArrowRight': 
           setMoveDirection(prev => ({ ...prev, x: 1 })); 
-          // Change animation to run if not already running
-          if (currentAnimation !== 'RifleRun' && actions && actions['RifleRun']) {
-            playAnimation('RifleRun');
-          }
+          // No longer directly setting animation here, it's handled in useFrame
           break;
         // Jump with Space
         case 'Space':
@@ -378,29 +502,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       switch (e.code) {
         case 'KeyA':
         case 'ArrowLeft': 
-          setMoveDirection(prev => {
-            const newState = { ...prev, x: 0 };
-            // If no longer moving, switch to idle
-            if (newState.x === 0 && newState.z === 0 && newState.y === 0) {
-              if (actions && actions['RifleIdle']) {
-                playAnimation('RifleIdle');
-              }
-            }
-            return newState;
-          }); 
+          setMoveDirection(prev => ({ ...prev, x: 0 }));
+          // Animation will be handled in useFrame
           break;
         case 'KeyD':
         case 'ArrowRight': 
-          setMoveDirection(prev => {
-            const newState = { ...prev, x: 0 };
-            // If no longer moving, switch to idle
-            if (newState.x === 0 && newState.z === 0 && newState.y === 0) {
-              if (actions && actions['RifleIdle']) {
-                playAnimation('RifleIdle');
-              }
-            }
-            return newState;
-          }); 
+          setMoveDirection(prev => ({ ...prev, x: 0 }));
+          // Animation will be handled in useFrame
           break;
         case 'Space':
           setMoveDirection(prev => ({ ...prev, y: 0 }));
@@ -408,31 +516,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         case 'KeyW':
         case 'ArrowUp':
           if (!movementConstraints.lockZ) {
-            setMoveDirection(prev => {
-              const newState = { ...prev, z: 0 };
-              // If no longer moving, switch to idle
-              if (newState.x === 0 && newState.z === 0 && newState.y === 0) {
-                if (actions && actions['RifleIdle']) {
-                  playAnimation('RifleIdle');
-                }
-              }
-              return newState;
-            });
+            setMoveDirection(prev => ({ ...prev, z: 0 }));
           }
           break;
         case 'KeyS':
         case 'ArrowDown': 
           if (!movementConstraints.lockZ) {
-            setMoveDirection(prev => {
-              const newState = { ...prev, z: 0 };
-              // If no longer moving, switch to idle
-              if (newState.x === 0 && newState.z === 0 && newState.y === 0) {
-                if (actions && actions['RifleIdle']) {
-                  playAnimation('RifleIdle');
-                }
-              }
-              return newState;
-            });
+            setMoveDirection(prev => ({ ...prev, z: 0 }));
           }
           break;
       }
@@ -453,7 +543,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       if (e.code.startsWith('Digit') && availableAnimations.length > 0) {
         const digit = parseInt(e.code.replace('Digit', ''), 10) - 1;
         if (digit >= 0 && digit < availableAnimations.length) {
-          playAnimation(availableAnimations[digit]);
+          playAnimation(availableAnimations[digit], true); // Mark as manual selection
         }
       }
     };
@@ -469,7 +559,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       window.removeEventListener('keydown', handleRotation);
       window.removeEventListener('keydown', handleAnimationTest);
     };
-  }, [enableKeyboardControls, currentAnimation, actions, availableAnimations]);
+  }, [enableKeyboardControls, currentAnimation, actions, availableAnimations, movementConstraints.lockZ, playAnimation]);
   
   // Find spine bones when scene is loaded
   useEffect(() => {
@@ -555,6 +645,27 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       console.log('Creating rifle instance');
       const rifleCopy = rifleScene.clone();
       rifleCopy.scale.set(0.7, 0.7, 0.7);
+      
+      // Look for the gun_muzzle and ejector objects in the rifle model
+      rifleCopy.traverse((object) => {
+        if (object.name === 'gun_muzzle') {
+          console.log('Found gun_muzzle in rifle model:', object);
+          muzzleRef.current = object;
+        }
+        if (object.name === 'ejector') {
+          console.log('Found ejector in rifle model:', object);
+          ejectorRef.current = object;
+        }
+      });
+      
+      // If muzzle or ejector not found, log warning
+      if (!muzzleRef.current) {
+        console.warn('No gun_muzzle object found in rifle model, flash effects may not work correctly');
+      }
+      if (!ejectorRef.current) {
+        console.warn('No ejector object found in rifle model, shell casings may not eject correctly');
+      }
+      
       rifleRef.current = rifleCopy;
       console.log('Rifle reference set');
     }
@@ -598,13 +709,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // This will allow the aim point to follow the mouse without distance constraints
     setWorldMousePosition(intersectionPoint);
     
-    if (debug) {
-      console.log('Mouse tracking:', {
-        mousePos: { x: mousePosition.current.x, y: mousePosition.current.y },
-        worldAimPoint: intersectionPoint,
-        characterPosition: characterPosition
-      });
-    }
+    // if (debug) {
+    //   console.log('Mouse tracking:', {
+    //     mousePos: { x: mousePosition.current.x, y: mousePosition.current.y },
+    //     worldAimPoint: intersectionPoint,
+    //     characterPosition: characterPosition
+    //   });
+    // }
   });
   
   // Add mouse wheel handler for camera zoom
@@ -657,28 +768,107 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // Only normalize if there's actual movement
     const isMoving = directionVector.length() > 0;
     
+    // Add debug logging to track movement state
+    if (debug && Math.random() < 0.01) {
+      console.log('Movement debug:', {
+        moveDirection,
+        directionVector,
+        isMoving,
+        currentAnimation,
+        isShooting
+      });
+    }
+    
     // Determine facing direction based on mouse position
     // Get screen-space direction from character to mouse
     const charPosition = characterRef.current.position.clone();
     const screenCharPos = charPosition.clone().project(state.camera);
-    const screenDirection = new THREE.Vector2(
+    const rawScreenDirection = new THREE.Vector2(
       mousePosition.current.x - screenCharPos.x,
       mousePosition.current.y - screenCharPos.y
     );
     
+    // Apply smoothing to the screen direction vector
+    // Use a much smaller lerp factor for more stable movement
+    const screenDirectionLerpFactor = delta * 3; // Reduced from implied 1.0 to 3.0 * delta
+    
+    // Smooth the input values before normalization
+    smoothedScreenDirectionRef.current.x = THREE.MathUtils.lerp(
+      smoothedScreenDirectionRef.current.x, 
+      rawScreenDirection.x,
+      screenDirectionLerpFactor
+    );
+    
+    smoothedScreenDirectionRef.current.y = THREE.MathUtils.lerp(
+      smoothedScreenDirectionRef.current.y,
+      rawScreenDirection.y,
+      screenDirectionLerpFactor
+    );
+    
+    // Add a dead zone to filter out very small movements
+    const deadZone = 0.05;
+    const filteredDirection = new THREE.Vector2(
+      Math.abs(smoothedScreenDirectionRef.current.x) < deadZone ? 0 : smoothedScreenDirectionRef.current.x,
+      Math.abs(smoothedScreenDirectionRef.current.y) < deadZone ? 0 : smoothedScreenDirectionRef.current.y
+    );
+    
+    // Normalize after smoothing and filtering
+    const screenDirection = filteredDirection.clone().normalize();
+    
     // Use mouse X position to determine facing, but only if moving or aiming
     let shouldFaceRight = screenDirection.x > 0;
     
-    // If moving, always face in the movement direction
+    // Track if we're moving opposite to aim direction for backwards animation
+    let isMovingOppositeToAiming = false;
+    
+    // If moving, check direction
     if (isMoving) {
       shouldFaceRight = moveDirection.x > 0;
-      // Set the character's facing direction based on movement
+      
+      // Check if we're aiming in opposite direction of movement
+      isMovingOppositeToAiming = (shouldFaceRight && screenDirection.x < -0.2) || 
+                                (!shouldFaceRight && screenDirection.x > 0.2);
+      
+      // When moving backwards, face the aim direction, not the movement direction
+      if (isMovingOppositeToAiming) {
+        // For backwards running, we want to face where we're aiming, not where we're moving
+        shouldFaceRight = screenDirection.x > 0;
+      }
+      
+      // Set the character's facing direction based on determined direction
       setFacingDirection(shouldFaceRight ? 'right' : 'left');
+      
+      // Only change animations if no manual animation is active or if we're already in a movement animation
+      if (!isManualAnimationActive || ['RifleRun', 'Backwards Rifle Run', 'RifleIdle', 'RifleJump'].includes(currentAnimation || '')) {
+        // Play the appropriate running animation
+        if (isMovingOppositeToAiming && actions && actions['Backwards Rifle Run']) {
+          if (currentAnimation !== 'Backwards Rifle Run') {
+            playAnimation('Backwards Rifle Run');
+          }
+        } else if (actions && actions['RifleRun']) {
+          if (currentAnimation !== 'RifleRun') {
+            playAnimation('RifleRun');
+          }
+        }
+      }
     } else {
       // When not moving, maintain the previous facing direction unless aiming significantly left/right
       // Only change facing for significant mouse movement (to avoid flipping back and forth)
       if (Math.abs(screenDirection.x) > 0.2) {
         setFacingDirection(shouldFaceRight ? 'right' : 'left');
+      }
+      
+      // Only revert to idle if:
+      // 1. We're not in a manual animation
+      // 2. Currently in a movement animation (RifleRun or Backwards Rifle Run)
+      // 3. Not in the jump animation
+      // 4. Not currently shooting
+      if (!isManualAnimationActive && 
+          actions && actions['RifleIdle'] && 
+          ['RifleRun', 'Backwards Rifle Run'].includes(currentAnimation || '') && 
+          currentAnimation !== 'RifleJump' &&
+          !isShooting) {
+        playAnimation('RifleIdle');
       }
     }
     
@@ -721,10 +911,32 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       
       // Instead of using world mouse position directly, get screen mouse position
       const screenCharPos = charPosition.clone().project(state.camera);
-      const screenDirection = new THREE.Vector2(
+      const rawScreenDirection = new THREE.Vector2(
         mousePosition.current.x - screenCharPos.x,
         mousePosition.current.y - screenCharPos.y
-      ).normalize();
+      );
+      
+      // Very simple smoothing - just enough to prevent jitter but direct enough for shooting
+      // Use a higher value (0.2) for more direct control
+      const screenDirectionLerpFactor = 0.2;
+      
+      // Simple smoothing with high responsiveness
+      smoothedScreenDirectionRef.current.x = THREE.MathUtils.lerp(
+        smoothedScreenDirectionRef.current.x, 
+        rawScreenDirection.x,
+        screenDirectionLerpFactor
+      );
+      
+      smoothedScreenDirectionRef.current.y = THREE.MathUtils.lerp(
+        smoothedScreenDirectionRef.current.y,
+        rawScreenDirection.y,
+        screenDirectionLerpFactor
+      );
+      
+      // No dead zone for direct control
+      
+      // Normalize the smoothed direction
+      const screenDirection = smoothedScreenDirectionRef.current.clone().normalize();
       
       // For 2.5D side-scroller, simplify the rotation:
       // 1. Horizontal rotation (left/right): based on character's facing direction
@@ -735,28 +947,27 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       const isFacingLeft = facingDirection === 'left';
       
       // Determine horizontal aim direction based on character's facing direction
-      // If facing right, positive mouseX aims right, negative aims left (from character's perspective)
-      // If facing left, it's reversed
       let horizontalAimFactor = isFacingRight ? 
         (screenDirection.x > 0 ? 0 : -screenDirection.x * 0.5) : 
         (screenDirection.x < 0 ? 0 : screenDirection.x * 0.5);
         
       // Vertical aim is directly based on mouse Y position relative to character
-      // Positive Y means aim down, negative means aim up
-      const verticalAimFactor = -screenDirection.y; // Invert so positive is up
+      const verticalAimFactor = -screenDirection.y; 
       
       // Scale and clamp vertical angle to prevent unnatural bending
-      // Increase max pitch angle for more dramatic effect
-      const maxPitch = Math.PI * 1.2; // Increased from 0.7 to 1.2 (about 216 degrees)
+      const maxPitch = Math.PI * 2.0;
+      
+      // Apply a slight vertical offset to adjust the resting position of the aiming
+      const verticalAimOffset = 0.45;
+      
       const clampedVerticalAngle = THREE.MathUtils.clamp(
-        verticalAimFactor * maxPitch * 1.5, // Multiply by 1.5 for stronger effect
+        (verticalAimFactor + verticalAimOffset) * maxPitch * 1.5,
         -maxPitch,
         maxPitch
       );
       
       // Get horizontal rotation based on character facing direction
-      // We want to limit how far the character can twist in each direction
-      const maxTwist = Math.PI * 0.8; // Increased from 0.3 to 0.8 (about 144 degrees)
+      const maxTwist = Math.PI * 0.8;
       let horizontalAngle = 0;
       
       if (isFacingRight) {
@@ -769,26 +980,32 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
           THREE.MathUtils.clamp(-screenDirection.x * maxTwist, -maxTwist, 0) : 0;
       }
       
-      // Distribute vertical rotation (pitch) with more emphasis on upper bones
-      // Increase these values for more dramatic rotation
-      const spinePitch = clampedVerticalAngle * 0.4;  // Increased from 0.3
-      const spine1Pitch = clampedVerticalAngle * 0.6; // Increased from 0.45
-      const spine2Pitch = clampedVerticalAngle * 0.8;  // Increased from 0.6
+      // Direct bone rotations - no complex history or weighted averages
       
-      // Apply rotations to bones with smooth transitions - faster lerp for more responsive rotation
+      // Distribute vertical rotation (pitch) with more emphasis on upper bones
+      const spinePitch = clampedVerticalAngle * 0.3;
+      const spine1Pitch = clampedVerticalAngle * 0.5;
+      const spine2Pitch = clampedVerticalAngle * 0.7;
+      const neckPitch = clampedVerticalAngle * 0.6;
+      
+      // Use a consistent, higher lerp speed for more responsive rotation
+      // Higher values (closer to 1) will make the bones follow the mouse more directly
+      const lerpSpeed = 0.3;
+      
+      // Apply rotations to bones with simple smoothing
       if (upperBodyBones.spine) {
         // For spine yaw (horizontal rotation)
         upperBodyBones.spine.rotation.y = THREE.MathUtils.lerp(
           upperBodyBones.spine.rotation.y,
-          horizontalAngle * 0.2, // Less twist for lower spine
-          delta * 8 // Faster lerp (was 5)
+          horizontalAngle * 0.2,
+          lerpSpeed
         );
         
         // For spine pitch (vertical rotation)
         upperBodyBones.spine.rotation.x = THREE.MathUtils.lerp(
           upperBodyBones.spine.rotation.x,
           spinePitch,
-          delta * 8 // Faster lerp (was 5)
+          lerpSpeed
         );
       }
       
@@ -796,13 +1013,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         upperBodyBones.spine1.rotation.y = THREE.MathUtils.lerp(
           upperBodyBones.spine1.rotation.y,
           horizontalAngle * 0.3,
-          delta * 8 // Faster lerp (was 5)
+          lerpSpeed
         );
         
         upperBodyBones.spine1.rotation.x = THREE.MathUtils.lerp(
           upperBodyBones.spine1.rotation.x,
           spine1Pitch,
-          delta * 8 // Faster lerp (was 5)
+          lerpSpeed
         );
       }
       
@@ -810,13 +1027,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         upperBodyBones.spine2.rotation.y = THREE.MathUtils.lerp(
           upperBodyBones.spine2.rotation.y,
           horizontalAngle * 0.3,
-          delta * 8 // Faster lerp (was 5)
+          lerpSpeed
         );
         
         upperBodyBones.spine2.rotation.x = THREE.MathUtils.lerp(
           upperBodyBones.spine2.rotation.x,
           spine2Pitch,
-          delta * 8 // Faster lerp (was 5)
+          lerpSpeed
         );
       }
       
@@ -824,21 +1041,22 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       if (upperBodyBones.neck) {
         upperBodyBones.neck.rotation.x = THREE.MathUtils.lerp(
           upperBodyBones.neck.rotation.x,
-          clampedVerticalAngle * 0.7, // Neck can rotate more dramatically
-          delta * 8
+          neckPitch,
+          lerpSpeed
         );
         
         upperBodyBones.neck.rotation.y = THREE.MathUtils.lerp(
           upperBodyBones.neck.rotation.y,
-          horizontalAngle * 0.4, // More twist for neck
-          delta * 8
+          horizontalAngle * 0.4,
+          lerpSpeed
         );
       }
       
       // Debug logging
       if (debug && Math.random() < 0.005) {
         console.log('Aim factors:', {
-          screenDirection,
+          rawScreenDirection,
+          smoothedScreenDirection: smoothedScreenDirectionRef.current,
           facingDirection,
           isFacingRight,
           isFacingLeft,
@@ -869,11 +1087,21 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         const offsets = currentAnimation && rifleOffsets[currentAnimation as keyof typeof rifleOffsets] 
           ? rifleOffsets[currentAnimation as keyof typeof rifleOffsets] 
           : DEFAULT_OFFSETS;
+          
+        // Calculate dynamic aim adjustment based on vertical aim angle
+        // This helps ensure the weapon actually points at the target
+        const dynamicRotationAdjustment = {
+          // More downward tilt when aiming up, less tilt when aiming down
+          // Using verticalAimFactor without the offset to get true aiming direction
+          x: offsets.rotation.x - (verticalAimFactor * 0.2), // Inverted and increased the adjustment factor
+          y: offsets.rotation.y,
+          z: offsets.rotation.z
+        };
 
-        // Apply rotations first
-        rifleRef.current.rotateZ(offsets.rotation.z);  // Roll
-        rifleRef.current.rotateX(offsets.rotation.x);   // Forward/backward tilt
-        rifleRef.current.rotateY(offsets.rotation.y);   // Left/right angle
+        // Apply rotations first with dynamic adjustments
+        rifleRef.current.rotateZ(dynamicRotationAdjustment.z);  // Roll
+        rifleRef.current.rotateX(dynamicRotationAdjustment.x);  // Forward/backward tilt
+        rifleRef.current.rotateY(dynamicRotationAdjustment.y);  // Left/right angle
 
         // Then apply position offset
         rifleRef.current.translateX(offsets.position.x);  // Left/right
@@ -884,6 +1112,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
           console.log('Rifle position:', rifleRef.current.position);
           console.log('Current animation:', currentAnimation);
           console.log('Using offsets:', offsets);
+          console.log('Dynamic rotation adjustment:', dynamicRotationAdjustment);
         }
       }
     }
@@ -900,6 +1129,16 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       currentAnimation,
       availableAnimations
     });
+    
+    // Update muzzle flash for visual variation when visible
+    if (muzzleFlashVisible && muzzleFlashRef.current) {
+      muzzleFlashRef.current.rotation.z = Math.random() * Math.PI * 2;
+      muzzleFlashRef.current.scale.set(
+        0.5 + Math.random() * 0.5,
+        0.5 + Math.random() * 0.5,
+        1
+      );
+    }
   });
   
   // Access the debug info for UI display
@@ -948,6 +1187,37 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     gui.domElement.style.display = guiVisible ? 'block' : 'none';
     document.body.appendChild(gui.domElement);
     
+    // Add weapon settings folder
+    const weaponFolder = gui.addFolder('Weapon Settings');
+    
+    // Add automatic toggle
+    weaponFolder.add(weaponConfig, 'isAutomatic').name('Auto Fire').onChange((value: boolean) => {
+      setWeaponConfig(prev => ({ ...prev, isAutomatic: value }));
+    });
+    
+    // Add fire rate control
+    weaponFolder.add(weaponConfig, 'fireRate', 1, 20, 1).name('Fire Rate (shots/sec)').onChange((value: number) => {
+      setWeaponConfig(prev => ({ ...prev, fireRate: value }));
+    });
+    
+    // Add muzzle flash duration control
+    weaponFolder.add(weaponConfig, 'muzzleFlashDuration', 10, 200, 10).name('Flash Duration (ms)').onChange((value: number) => {
+      setWeaponConfig(prev => ({ ...prev, muzzleFlashDuration: value }));
+    });
+    
+    // Add recoil controls
+    weaponFolder.add(weaponConfig, 'recoil', 0, 0.1, 0.01).name('Recoil Amount').onChange((value: number) => {
+      setWeaponConfig(prev => ({ ...prev, recoil: value }));
+    });
+    
+    weaponFolder.add(weaponConfig, 'maxRecoil', 0, 0.3, 0.01).name('Max Recoil').onChange((value: number) => {
+      setWeaponConfig(prev => ({ ...prev, maxRecoil: value }));
+    });
+    
+    weaponFolder.add(weaponConfig, 'recoilRecovery', 0, 0.05, 0.001).name('Recoil Recovery').onChange((value: number) => {
+      setWeaponConfig(prev => ({ ...prev, recoilRecovery: value }));
+    });
+    
     // Add animation speed control
     const animationSpeed = { speed: 1.0 };
     gui.add(animationSpeed, 'speed', 0.1, 2.0, 0.1).onChange((value: number) => {
@@ -955,6 +1225,22 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         actions[currentAnimation].timeScale = value;
       }
     });
+    
+    // Add animation selection dropdown
+    const animationControls = {
+      animation: currentAnimation || 'RifleIdle',
+      playSelected: () => {
+        if (animationControls.animation && actions[animationControls.animation]) {
+          playAnimation(animationControls.animation, true);
+        }
+      }
+    };
+    
+    // Create animation selector
+    if (availableAnimations.length > 0) {
+      gui.add(animationControls, 'animation', availableAnimations).name('Select Animation');
+      gui.add(animationControls, 'playSelected').name('Play Selected Animation');
+    }
     
     // Create folders for each animation
     Object.entries(rifleOffsets).forEach(([animationName, offsets]) => {
@@ -1027,11 +1313,572 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       }
       gui.destroy();
     };
-  }, [debug, currentAnimation, actions, guiVisible]);
+  }, [debug, currentAnimation, actions, guiVisible, availableAnimations, playAnimation]);
+  
+  // Create muzzle flash effect when rifle is ready
+  useEffect(() => {
+    if (!rifleRef.current) return;
+    
+    // Clear previous flash if it exists
+    if (muzzleFlashRef.current) {
+      console.log('Removing previous muzzle flash');
+      if (muzzleFlashRef.current.parent) {
+        muzzleFlashRef.current.parent.remove(muzzleFlashRef.current);
+      }
+      muzzleFlashRef.current = null;
+    }
+    
+    if (muzzleFlashLightRef.current) {
+      console.log('Removing previous muzzle flash light');
+      if (muzzleFlashLightRef.current.parent) {
+        muzzleFlashLightRef.current.parent.remove(muzzleFlashLightRef.current);
+      }
+      muzzleFlashLightRef.current = null;
+    }
+    
+    console.log('Creating new muzzle flash effect');
+    
+    // Create a simple muzzle flash disc
+    const flashGeometry = new THREE.CircleGeometry(0.1, 8);
+    const flashMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffff80,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+    });
+    
+    const muzzleFlash = new THREE.Mesh(flashGeometry, flashMaterial);
+    muzzleFlash.visible = false;
+    muzzleFlashRef.current = muzzleFlash;
+    
+    // Add a point light for dynamic illumination
+    const flashLight = new THREE.PointLight(0xffaa00, 5, 3, 2);
+    flashLight.visible = false;
+    muzzleFlashLightRef.current = flashLight;
+    
+    // Create a group to hold both flash elements
+    const muzzleFlashGroup = new THREE.Group();
+    muzzleFlashGroup.add(muzzleFlash);
+    muzzleFlashGroup.add(flashLight);
+    
+    // Position the flash group
+    if (muzzleRef.current) {
+      // If we have a specific muzzle object, parent the flash to it
+      console.log('Attaching muzzle flash to gun_muzzle object');
+      muzzleRef.current.add(muzzleFlashGroup);
+      muzzleFlashGroup.position.set(0, 0, 0.1); // Small forward offset from muzzle
+    } else {
+      // Otherwise add it to the rifle with a position estimate
+      console.log('Attaching muzzle flash directly to rifle with position estimate');
+      rifleRef.current.add(muzzleFlashGroup);
+      // Position at the estimated end of the barrel
+      muzzleFlashGroup.position.set(0, 0, 0.6);
+    }
+    
+    // Random rotation for variation
+    muzzleFlash.rotation.z = Math.random() * Math.PI;
+    
+    return () => {
+      // No cleanup needed for muzzle flash as it's attached to the rifle
+    };
+  }, [rifleRef, muzzleRef]);
+  
+  // Create shell casings instanced mesh
+  useEffect(() => {
+    // Only create shell casings if we have a scene to add them to
+    if (!scene) return;
+    
+    // Clean up any existing shell casings
+    if (shellCasingsRef.current) {
+      scene.remove(shellCasingsRef.current);
+      shellCasingsRef.current = null;
+    }
+    
+    console.log('Creating shell casings instanced mesh');
+    const shellGeometry = new THREE.CylinderGeometry(0.02, 0.02, 0.1, 8);
+    shellGeometry.rotateX(Math.PI / 2); // Orient shell properly
+    const shellMaterial = new THREE.MeshStandardMaterial({ 
+      color: 0xD4AF37, // Brass color
+      metalness: 0.8,
+      roughness: 0.3
+    });
+    
+    const shellInstancedMesh = new THREE.InstancedMesh(shellGeometry, shellMaterial, maxShells);
+    shellInstancedMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    shellInstancedMesh.count = 0; // Start with no shells visible
+    
+    // Get the scene root to ensure it's at the top level
+    // This is critical for independence from character movement
+    const sceneRoot = scene.parent || scene;
+    
+    // IMPORTANT: We're ensuring the shell mesh is added to the scene root
+    // Not as a child of the character or any movable object
+    sceneRoot.add(shellInstancedMesh);
+    shellCasingsRef.current = shellInstancedMesh;
+    
+    // Initialize matrices and speeds
+    shellMatrixRef.current = Array(maxShells).fill(0).map(() => new THREE.Matrix4());
+    shellSpeedRef.current = Array(maxShells).fill(null).map(() => ({ x: 0, y: 0, z: 0 }));
+    shellLifeRef.current = Array(maxShells).fill(0);
+    
+    console.log('Shell mesh added directly to scene root for independent movement');
+    
+    return () => {
+      // Clean up
+      if (shellInstancedMesh && sceneRoot) {
+        sceneRoot.remove(shellInstancedMesh);
+      }
+    };
+  }, [scene]); // Only recreate when scene changes
+  
+  // Initialize sound effects
+  useEffect(() => {
+    // Set up rifle fire sound
+    const rifleFireSound = new Audio('/sound/rifle_fire.mp3');
+    rifleFireSound.volume = 0.6; // Adjust volume as needed
+    rifleFireSoundRef.current = rifleFireSound;
+    
+    return () => {
+      // Clean up audio resources
+      if (rifleFireSoundRef.current) {
+        rifleFireSoundRef.current.pause();
+        rifleFireSoundRef.current = null;
+      }
+    };
+  }, []);
+  
+  // Function to eject a shell casing - simplified for clarity
+  const ejectShell = useCallback(() => {
+    if (!shellCasingsRef.current || !rifleRef.current) {
+      console.warn('Cannot eject shell - missing references');
+      return;
+    }
+    
+    // Get position for ejection - prioritize the ejector point if available
+    const ejectPosition = new THREE.Vector3();
+    
+    if (ejectorRef.current) {
+      // Use dedicated ejector position if available
+      ejectorRef.current.getWorldPosition(ejectPosition);
+      console.log('Ejecting shell from ejector point:', ejectPosition);
+    } else if (muzzleRef.current) {
+      // Fall back to muzzle position with offset if ejector not available
+      muzzleRef.current.getWorldPosition(ejectPosition);
+      
+      // Get rifle's orientation
+      const rifleQuaternion = new THREE.Quaternion();
+      rifleRef.current.getWorldQuaternion(rifleQuaternion);
+      
+      // Create a direction vector pointing right and slightly back from the rifle
+      const rightVector = new THREE.Vector3(0, 0.05, -0.1);
+      rightVector.applyQuaternion(rifleQuaternion);
+      
+      // Add offset to ejection position
+      ejectPosition.add(rightVector);
+      console.log('Ejecting shell from computed position:', ejectPosition);
+    } else {
+      // Last resort: use rifle position with a fixed offset
+      rifleRef.current.getWorldPosition(ejectPosition);
+      ejectPosition.y += 0.1; // Slight upward offset
+      console.log('Ejecting shell from rifle position with offset:', ejectPosition);
+    }
+    
+    // Set up shell casing physical properties
+    const shellIndex = nextShellIndexRef.current;
+    
+    // Move to next shell slot (rotating through available slots)
+    nextShellIndexRef.current = (nextShellIndexRef.current + 1) % maxShells;
+    
+    // Get rifle's orientation for more accurate ejection direction
+    const rifleQuaternion = new THREE.Quaternion();
+    rifleRef.current.getWorldQuaternion(rifleQuaternion);
+    
+    // Create base ejection velocity direction - increased for more noticeable effect
+    // Default: eject right and slightly up from rifle's perspective
+    const baseVelocity = new THREE.Vector3(0.4, 0.5, -0.2);
+    baseVelocity.applyQuaternion(rifleQuaternion);
+    
+    // Store the physics properties for this shell
+    const initialVelocity = {
+      x: baseVelocity.x + (Math.random() - 0.5) * 0.2,  // Increased randomness
+      y: baseVelocity.y + Math.random() * 0.3,           // Increased upward randomness
+      z: baseVelocity.z + (Math.random() - 0.5) * 0.2   // Increased randomness
+    };
+    
+    // Create a matrix for this shell with randomized rotation
+    const initialRotation = new THREE.Euler(
+      Math.random() * Math.PI * 2, 
+      Math.random() * Math.PI * 2, 
+      Math.random() * Math.PI * 2
+    );
+    
+    // Create initial matrix with position and rotation
+    const matrix = new THREE.Matrix4();
+    matrix.compose(
+      ejectPosition,
+      new THREE.Quaternion().setFromEuler(initialRotation),
+      new THREE.Vector3(1, 1, 1)
+    );
+    
+    // Store the matrix for future updates
+    shellMatrixRef.current[shellIndex] = matrix.clone(); // Important: clone to avoid reference issues
+    
+    // Apply matrix to the instanced mesh
+    shellCasingsRef.current.setMatrixAt(shellIndex, matrix);
+    
+    // Save velocity for physics updates
+    shellSpeedRef.current[shellIndex] = { ...initialVelocity }; // Clone to avoid reference issues
+    
+    // Set lifetime - longer for better visibility
+    shellLifeRef.current[shellIndex] = 6; // Seconds before disappearing
+    
+    // Ensure instance count is set correctly
+    if (shellCasingsRef.current.count < maxShells) {
+      shellCasingsRef.current.count = Math.max(shellCasingsRef.current.count, shellIndex + 1);
+    }
+    
+    // Update the instance buffer
+    shellCasingsRef.current.instanceMatrix.needsUpdate = true;
+    
+    // Debug
+    if (debug) {
+      console.log('Shell ejected:', {
+        position: ejectPosition,
+        velocity: initialVelocity,
+        shellIndex,
+        totalShells: shellCasingsRef.current.count
+      });
+    }
+  }, [debug]);
+
+  // Update shell casings physics - moved earlier in the code and refined
+  useFrame((state, delta) => {
+    if (!shellCasingsRef.current || shellCasingsRef.current.count === 0) return;
+    
+    let anyShellActive = false;
+    
+    // Update each active shell casing
+    for (let i = 0; i < shellCasingsRef.current.count; i++) {
+      // Skip if this shell has no lifetime left
+      if (shellLifeRef.current[i] <= 0) continue;
+      
+      // Reduce lifetime
+      shellLifeRef.current[i] -= delta;
+      
+      if (shellLifeRef.current[i] <= 0) {
+        // Skip further processing if shell just expired
+        continue;
+      }
+      
+      anyShellActive = true;
+      
+      // Get current matrix
+      const matrix = shellMatrixRef.current[i];
+      
+      // Extract position, rotation, and scale from matrix
+      const position = new THREE.Vector3();
+      const quaternion = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      matrix.decompose(position, quaternion, scale);
+      
+      // Apply gravity to y speed (increased)
+      shellSpeedRef.current[i].y -= 15.0 * delta;
+      
+      // Apply speed to position - this updates the object's world position
+      position.x += shellSpeedRef.current[i].x * delta;
+      position.y += shellSpeedRef.current[i].y * delta;
+      position.z += shellSpeedRef.current[i].z * delta;
+      
+      // Simple ground collision
+      if (position.y < 0.03) { // Slightly above ground to prevent z-fighting
+        position.y = 0.03;
+        shellSpeedRef.current[i].y = -shellSpeedRef.current[i].y * 0.3; // Dampen bounce
+        
+        // Apply stronger friction when on ground
+        shellSpeedRef.current[i].x *= 0.5; // Increased friction
+        shellSpeedRef.current[i].z *= 0.5; // Increased friction
+        
+        // If speed is very low after bounce, let it rest
+        if (Math.abs(shellSpeedRef.current[i].y) < 0.5) {
+          shellSpeedRef.current[i].y = 0;
+          shellSpeedRef.current[i].x *= 0.2; // Stronger deceleration
+          shellSpeedRef.current[i].z *= 0.2; // Stronger deceleration
+        }
+      }
+      
+      // Create more dynamic rotation
+      const rotationSpeed = Math.max(
+        Math.abs(shellSpeedRef.current[i].x),
+        Math.abs(shellSpeedRef.current[i].y),
+        Math.abs(shellSpeedRef.current[i].z)
+      ) * 15; // Rotation speed based on movement speed
+      
+      // Convert quaternion to euler for rotation updates
+      const euler = new THREE.Euler().setFromQuaternion(quaternion);
+      
+      // Apply rotation based on speed and random axis
+      euler.x += delta * rotationSpeed * (0.5 + Math.random() * 0.5);
+      euler.y += delta * rotationSpeed * (0.5 + Math.random() * 0.5);
+      euler.z += delta * rotationSpeed * (0.5 + Math.random() * 0.5);
+      
+      // Create a new quaternion from the updated euler
+      const newQuaternion = new THREE.Quaternion().setFromEuler(euler);
+      
+      // Create a new matrix with updated position and rotation
+      const newMatrix = new THREE.Matrix4();
+      newMatrix.compose(position, newQuaternion, scale);
+      
+      // Apply the new matrix
+      shellMatrixRef.current[i] = newMatrix.clone(); // Clone to avoid reference issues
+      shellCasingsRef.current.setMatrixAt(i, newMatrix);
+    }
+    
+    // Update the instance buffer if any shells were active
+    if (anyShellActive) {
+      shellCasingsRef.current.instanceMatrix.needsUpdate = true;
+    }
+  });
+
+  // Function to trigger shooting
+  const shoot = useCallback(() => {
+    // Check cooldown
+    const currentTime = Date.now();
+    const timeSinceLastShot = currentTime - lastShotTime;
+    const cooldownTime = 1000 / weaponConfig.fireRate;
+    
+    if (timeSinceLastShot < cooldownTime) {
+      return false; // Don't shoot if we haven't waited long enough
+    }
+    
+    // Update shot time
+    setLastShotTime(currentTime);
+    setIsShooting(true);
+    
+    // Play rifle fire sound
+    if (rifleFireSoundRef.current) {
+      // Create a clone of the audio to allow overlapping sounds for rapid fire
+      const soundClone = rifleFireSoundRef.current.cloneNode(true) as HTMLAudioElement;
+      soundClone.volume = 0.6;
+      soundClone.play().catch(error => {
+        console.warn('Error playing rifle fire sound:', error);
+      });
+    }
+    
+    // Apply recoil
+    currentRecoilRef.current = Math.min(
+      weaponConfig.maxRecoil, 
+      currentRecoilRef.current + weaponConfig.recoil
+    );
+    
+    // Check if we're moving
+    const isMoving = moveDirection.x !== 0 || moveDirection.y !== 0 || moveDirection.z !== 0;
+    
+    // Play the shooting animation - with different behavior based on movement state
+    if (actions && actions['Rifle Fire']) {
+      if (isMoving) {
+        // When moving, we'll blend the shooting animation on top of the running animation
+        // instead of replacing it
+        
+        // Keep the current running animation playing
+        // Just add a subtle rifle fire animation at a low weight to add some effect without disrupting movement
+        actions['Rifle Fire'].reset();
+        actions['Rifle Fire'].setLoop(THREE.LoopOnce, 1);
+        actions['Rifle Fire'].setEffectiveWeight(0.3); // Lower weight to blend with running
+        actions['Rifle Fire'].setEffectiveTimeScale(1.0);
+        actions['Rifle Fire'].play();
+        
+        // Don't change currentAnimation state - keep it as the running animation
+      } else {
+        // When stationary, play the full firing animation
+        // Stop any playing animations (including idle) to ensure firing animation plays
+        if (currentAnimation && currentAnimation !== 'Rifle Fire' && actions[currentAnimation]) {
+          actions[currentAnimation].fadeOut(0.1);
+        }
+        
+        // Always reset to start from the first frame - this is key for rapid fire
+        actions['Rifle Fire'].reset();
+        
+        // Set to play once and not loop
+        actions['Rifle Fire'].setLoop(THREE.LoopOnce, 1);
+        
+        // Set full weight - we want to see the full animation
+        actions['Rifle Fire'].setEffectiveWeight(1.0);
+        
+        // Full speed
+        actions['Rifle Fire'].setEffectiveTimeScale(1.0);
+        
+        // Start the animation immediately - no blending or crossfading
+        actions['Rifle Fire'].play();
+        
+        // Update the current animation
+        setCurrentAnimation('Rifle Fire');
+      }
+    }
+    
+    // Show muzzle flash
+    setMuzzleFlashVisible(true);
+    
+    // Randomize flash light intensity
+    if (muzzleFlashLightRef.current) {
+      muzzleFlashLightRef.current.intensity = 5 + Math.random() * 3;
+      const hue = 0.1 + Math.random() * 0.05;
+      muzzleFlashLightRef.current.color.setHSL(hue, 0.9, 0.7);
+    }
+    
+    // Eject a shell casing
+    ejectShell();
+    
+    // Hide muzzle flash after a short delay
+    setTimeout(() => {
+      setMuzzleFlashVisible(false);
+    }, weaponConfig.muzzleFlashDuration);
+    
+    return true; // Return success
+  }, [
+    actions,
+    ejectShell, 
+    lastShotTime,
+    currentAnimation,
+    moveDirection,
+    weaponConfig.fireRate, 
+    weaponConfig.maxRecoil, 
+    weaponConfig.muzzleFlashDuration, 
+    weaponConfig.recoil
+  ]);
+
+  // Function to stop automatic fire
+  const stopAutomaticFire = useCallback(() => {
+    if (shootIntervalRef.current !== null) {
+      clearInterval(shootIntervalRef.current);
+      shootIntervalRef.current = null;
+    }
+  }, []);
+
+  // Use useFrame for continuous firing rather than intervals
+  // This is more resilient against component unmounting
+  useFrame((state, delta) => {
+    // Handle automatic firing in useFrame
+    if (isMouseDownRef.current && weaponConfig.isAutomatic) {
+      // Attempt to shoot - the shoot function will handle cooldowns
+      shoot();
+    }
+  });
+  
+  // Set up mouse click handling for shooting
+  useEffect(() => {
+    const handleMouseDown = (event: MouseEvent) => {
+      // Left mouse button
+      if (event.button === 0) {
+        // Update both the state and the ref
+        setIsMouseDown(true);
+        isMouseDownRef.current = true;
+        
+        // Initial shot for both auto and semi
+        shoot();
+      }
+    };
+    
+    const handleMouseUp = (event: MouseEvent) => {
+      // Left mouse button
+      if (event.button === 0) {
+        // Update both the state and the ref
+        setIsMouseDown(false);
+        isMouseDownRef.current = false;
+        setIsShooting(false);
+        
+        // Return to idle animation ONLY if not moving and current animation is Rifle Fire
+        const isMoving = moveDirection.x !== 0 || moveDirection.y !== 0 || moveDirection.z !== 0;
+        if (!isMoving && currentAnimation === 'Rifle Fire' && actions && actions['RifleIdle']) {
+          // Start idle BEFORE stopping the fire animation to prevent gaps
+          actions['RifleIdle'].reset();
+          actions['RifleIdle'].setEffectiveWeight(1.0);
+          actions['RifleIdle'].fadeIn(0.1);
+          actions['RifleIdle'].play();
+          
+          // AFTER starting idle, fade out the fire animation
+          if (actions && actions['Rifle Fire']) {
+            actions['Rifle Fire'].fadeOut(0.2);
+          }
+          
+          // Update the current animation state
+          setCurrentAnimation('RifleIdle');
+        } else {
+          // When moving or in other states, just fade out the fire animation
+          if (actions && actions['Rifle Fire']) {
+            actions['Rifle Fire'].fadeOut(0.1);
+          }
+        }
+      }
+    };
+    
+    window.addEventListener('mousedown', handleMouseDown);
+    window.addEventListener('mouseup', handleMouseUp);
+    
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [shoot, moveDirection, currentAnimation, actions, playAnimation]);
+  
+  // Update muzzle flash visibility
+  useEffect(() => {
+    if (!muzzleFlashRef.current || !muzzleFlashLightRef.current) return;
+    
+    // Update flash visibility
+    muzzleFlashRef.current.visible = muzzleFlashVisible;
+    muzzleFlashLightRef.current.visible = muzzleFlashVisible;
+    
+    // Random variations for a more dynamic effect when flashing
+    if (muzzleFlashVisible && muzzleFlashRef.current) {
+      const randomScale = 0.8 + Math.random() * 0.4;
+      muzzleFlashRef.current.scale.set(randomScale, randomScale, 1);
+      muzzleFlashRef.current.rotation.z = Math.random() * Math.PI * 2;
+    }
+  }, [muzzleFlashVisible]);
+  
+  // Add recoil recovery
+  useFrame((state, delta) => {
+    // Gradually recover from recoil
+    if (currentRecoilRef.current > 0) {
+      currentRecoilRef.current = Math.max(0, currentRecoilRef.current - weaponConfig.recoilRecovery * delta * 60);
+    }
+  });
+  
+  // Add firing mode toggle with V key
+  useEffect(() => {
+    const toggleFiringMode = (e: KeyboardEvent) => {
+      if (e.code === 'KeyV') {
+        // Update firing mode
+        const newIsAutomatic = !weaponConfig.isAutomatic;
+        setWeaponConfig(prev => ({
+          ...prev,
+          isAutomatic: newIsAutomatic
+        }));
+        
+        // If switching to semi-auto, make sure to stop any automatic fire
+        if (!newIsAutomatic) {
+          stopAutomaticFire();
+        }
+        
+        // Alert the player about the mode change
+        const newMode = newIsAutomatic ? 'automatic' : 'semi-automatic';
+        console.log(`Firing mode switched to ${newMode}`);
+        
+        // Visual feedback when toggling
+        if (debug) {
+          console.log(`Firing mode switched to ${newMode}`);
+        }
+      }
+    };
+    
+    window.addEventListener('keydown', toggleFiringMode);
+    return () => window.removeEventListener('keydown', toggleFiringMode);
+  }, [debug, stopAutomaticFire, weaponConfig.isAutomatic]);
   
   useImperativeHandle(ref, () => ({
     characterRef: characterRef.current,
-    playAnimation: playAnimation
+    playAnimation: playAnimation,
+    shoot: shoot
   }));
   
   return (
@@ -1053,11 +1900,17 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       {debug && (
         <group>
           {(() => {
-            // Try to get the hand position for the starting point
+            // Try to get the muzzle position for the starting point
             let startPosition = new THREE.Vector3();
-            if (handBoneRef.current) {
-              // Get world position of the right hand
+            
+            if (muzzleRef.current && rifleRef.current) {
+              // Get world position of the gun muzzle
+              muzzleRef.current.getWorldPosition(startPosition);
+              // console.log('Using muzzle position for debug line:', startPosition);
+            } else if (handBoneRef.current) {
+              // Fallback to hand position
               handBoneRef.current.getWorldPosition(startPosition);
+              console.log('Falling back to hand position for debug line');
             } else if (upperBodyBones.leftHand) {
               // Fallback to left hand
               upperBodyBones.leftHand.getWorldPosition(startPosition);
@@ -1073,13 +1926,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
             // Add debug sphere at start position
             return (
               <>
-                {/* Red dot at hand/weapon position */}
+                {/* Red dot at muzzle/hand/weapon position */}
                 <mesh position={startPosition}>
                   <sphereGeometry args={[0.1, 8, 8]} />
                   <meshBasicMaterial color="red" />
                 </mesh>
                 
-                {/* Line from hand to aim point */}
+                {/* Line from muzzle to aim point */}
                 <line>
                   <bufferGeometry>
                     <float32BufferAttribute
@@ -1105,6 +1958,22 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
                   <sphereGeometry args={[0.1, 8, 8]} />
                   <meshBasicMaterial color="blue" />
                 </mesh>
+                
+                {/* Add debug sphere for ejector point */}
+                {ejectorRef.current && (
+                  (() => {
+                    // Get the world position of the ejector
+                    const ejectorPosition = new THREE.Vector3();
+                    ejectorRef.current.getWorldPosition(ejectorPosition);
+                    
+                    return (
+                      <mesh position={ejectorPosition}>
+                        <sphereGeometry args={[0.05, 16, 16]} />
+                        <meshBasicMaterial color="green" />
+                      </mesh>
+                    );
+                  })()
+                )}
               </>
             );
           })()}
