@@ -6,6 +6,7 @@ import { OrbitControls, Grid } from '@react-three/drei';
 import * as THREE from 'three';
 import CharacterController, { CharacterControllerRef } from './CharacterController';
 import SideViewCamera from './SideViewCamera';
+import { HUD } from '../hud';
 
 // Simple debug panel for our development environment
 const DebugPanel = ({ children }: { children: React.ReactNode }) => {
@@ -420,8 +421,21 @@ const GameDevEnvironment = () => {
     setShowDebug(newShowDebug);
   }, [showDebug]);
 
+  // Prevent context menu to allow right-click functionality
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+    };
+
+    window.addEventListener('contextmenu', handleContextMenu);
+    return () => {
+      window.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, []);
+
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative' }}>
+      <HUD />
       <Canvas 
         shadows 
         camera={{ 

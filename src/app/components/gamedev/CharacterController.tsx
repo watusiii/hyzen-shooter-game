@@ -6,6 +6,9 @@ import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
 import * as dat from 'lil-gui';
 
+import { PhysicsBody } from '../physics';
+import { PHYSICS } from '../physics';
+
 // Export interface for the ref
 export interface CharacterControllerRef {
   characterRef: THREE.Group | THREE.Mesh | null;
@@ -41,13 +44,13 @@ interface CharacterControllerProps {
 const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, CharacterControllerProps> = ({
   modelPath = '/models/player/2_2.glb',
   animationsPath = '/models/player/animation_host.glb', // Using the animation host GLB file instead of FBX
-  position = [0, 0, 0],
+  position = [0, 0.1, 0], // Raised slightly above ground level to allow jet to work
   scale = 2,
   speed = 5,
   enableKeyboardControls = true,
   defaultAnimation = 'RifleIdle',
   debug = false,
-  weaponPath = '/models/weapon/rifle.glb'
+  weaponPath = '/models/weapon/rifle2.glb'
 }, ref) => {
   // Reference to the character model or group
   const characterRef = useRef<THREE.Group | THREE.Mesh>(null);
@@ -67,7 +70,9 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   const [moveDirection, setMoveDirection] = useState({ 
     x: 0,  // Left/right movement (this will be our main side-scrolling axis)
     y: 0,  // Up/down movement (jumping, gravity)
-    z: 0   // Forward/backward movement (limited for side-scrolling)
+    z: 0,  // Forward/backward movement (limited for side-scrolling)
+    jump: false, // Jump input state
+    jet: false   // Jet pack input state
   });
   
   // State for movement constraints
@@ -223,6 +228,16 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     lifetime: number;
   }[]>([]);
   
+  // Add physics body reference
+  const physicsBodyRef = useRef<PhysicsBody | null>(null);
+  
+  // Initialize physics body
+  useEffect(() => {
+    if (characterRef.current) {
+      physicsBodyRef.current = new PhysicsBody(characterRef.current.position);
+    }
+  }, []);
+  
   // Log model details
   useEffect(() => {
     console.log('Model path:', modelPath);
@@ -327,13 +342,22 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     animations.forEach(clip => {
       const action = actions[clip.name];
       if (action) {
-        // Reset and configure the action
-        action.reset();
-        action.clampWhenFinished = false;
-        action.loop = THREE.LoopRepeat;
-        action.repetitions = Infinity;
-        action.timeScale = 1.0;
-        action.weight = 1.0;
+        // Special handling for RifleJump to prevent it from freezing
+        if (clip.name === 'RifleJump') {
+          action.reset();
+          action.clampWhenFinished = false;
+          action.setLoop(THREE.LoopOnce, 1);
+          action.timeScale = 1.0;
+          action.weight = 1.0;
+        } else {
+          // Reset and configure the action
+          action.reset();
+          action.clampWhenFinished = false;
+          action.loop = THREE.LoopRepeat;
+          action.repetitions = Infinity;
+          action.timeScale = 1.0;
+          action.weight = 1.0;
+        }
         
         // Store the configured action
         actionsRef.current[clip.name] = action;
@@ -409,41 +433,18 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     
     // Determine if this animation should be looped
     // Add special case handling for any animations that shouldn't loop
-    const nonLoopingAnimations = ['Rifle Fire', 'RifleJump']; // Animations that should play once
+    const nonLoopingAnimations = ['Rifle Fire', 'RifleJump'];
     
     if (nonLoopingAnimations.includes(name)) {
-      action.setLoop(THREE.LoopOnce, 1);
-      action.clampWhenFinished = true;
-      
-      // For non-looping animations, set up a callback when they finish
-      // to return to idle or previous animation, but only if not currently shooting
-      action.reset()
-        .setEffectiveTimeScale(1)
-        .setEffectiveWeight(1)
-        .fadeIn(0.2);
-      
-      // Setup the finish listener
-      const mixer = action.getMixer();
-      const onFinished = () => {
-        // Don't return to idle if this is the fire animation and we're still shooting
-        if (name === 'Rifle Fire' && isMouseDownRef.current && weaponConfig.isAutomatic) {
-          console.log('Still shooting, not returning to idle');
-          // Just remove the listener but don't switch animations
-          mixer.removeEventListener('finished', onFinished);
-          return;
-        }
-        
-        // Return to idle animation when finished (for other non-looping animations)
-        if (actions['RifleIdle']) {
-          playAnimation('RifleIdle');
-        }
-        // Remove the listener
-        mixer.removeEventListener('finished', onFinished);
-        // Reset manual animation flag
-        setIsManualAnimationActive(false);
-      };
-      
-      mixer.addEventListener('finished', onFinished);
+      // Special handling for jump animation to freeze at the end frame
+      if (name === 'RifleJump') {
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true; // This is key: KEEP the last pose until we explicitly transition
+      } else {
+        // For other non-looping animations
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = false;
+      }
     } else {
       // For looping animations
       action.setLoop(THREE.LoopRepeat, Infinity);
@@ -476,10 +477,13 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
           break;
         // Jump with Space
         case 'Space':
-          setMoveDirection(prev => ({ ...prev, y: 1 }));
-          // Change animation to jump if available
-          if (currentAnimation !== 'RifleJump' && actions && actions['RifleJump']) {
-            playAnimation('RifleJump');
+          // Only set jump to true if we're on the ground and not already jumping
+          if (physicsBodyRef.current && physicsBodyRef.current.isGrounded() && !moveDirection.jump) {
+            setMoveDirection(prev => ({ ...prev, jump: true }));
+            // Only play jump animation once when leaving the ground
+            if (actions && actions['RifleJump']) {
+              playAnimation('RifleJump');
+            }
           }
           break;
         // Up/down are still available but may be disabled for pure side-scrolling
@@ -511,7 +515,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
           // Animation will be handled in useFrame
           break;
         case 'Space':
-          setMoveDirection(prev => ({ ...prev, y: 0 }));
+          setMoveDirection(prev => ({ ...prev, jump: false }));
           break;
         case 'KeyW':
         case 'ArrowUp':
@@ -756,17 +760,90 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   
   // Update character position and rotation each frame
   useFrame((state, delta) => {
-    if (!characterRef.current || !scene) return;
+    if (!characterRef.current || !scene || !physicsBodyRef.current) return;
     
-    // Create a direction vector from input
+    // Debug log for jump state if triggered by right-click
+    if (debug && moveDirection.jump) {
+      console.log('Jump state:', { 
+        jump: moveDirection.jump,
+        grounded: physicsBodyRef.current.getState().grounded
+      });
+    }
+
+    // Debug log for jet pack state
+    if (debug && moveDirection.jet) {
+      console.log('Jet pack state:', { 
+        jet: moveDirection.jet,
+        grounded: physicsBodyRef.current.getState().grounded,
+        velocity: physicsBodyRef.current.getState().velocity.y.toFixed(2),
+        position: physicsBodyRef.current.getState().position.y.toFixed(2)
+      });
+    }
+
+    // Get physics state before update
+    const wasGrounded = physicsBodyRef.current.getState().grounded;
+
+    // Update physics with both jump and jet parameters
+    physicsBodyRef.current.update(delta, { 
+      jump: moveDirection.jump,
+      jet: moveDirection.jet 
+    });
+
+    // Get updated physics state
+    const isNowGrounded = physicsBodyRef.current.getState().grounded;
+    
+    // Detect landing - if we just hit the ground
+    if (!wasGrounded && isNowGrounded) {
+      // We just landed, play idle or run animation based on movement state
+      const isMoving = moveDirection.x !== 0 || moveDirection.z !== 0;
+      
+      if (isMoving) {
+        // Check if we should use normal run or backwards run
+        const screenDirection = smoothedScreenDirectionRef.current.clone().normalize();
+        const isMovingOppositeToAiming = 
+          (moveDirection.x > 0 && screenDirection.x < -0.2) || 
+          (moveDirection.x < 0 && screenDirection.x > 0.2);
+        
+        if (isMovingOppositeToAiming && actions && actions['Backwards Rifle Run']) {
+          playAnimation('Backwards Rifle Run');
+        } else if (actions && actions['RifleRun']) {
+          playAnimation('RifleRun');
+        }
+      } else if (actions && actions['RifleIdle']) {
+        playAnimation('RifleIdle');
+      }
+    }
+
+    // Get updated position from physics
+    const physicsPosition = physicsBodyRef.current.getPosition();
+    
+    // Update character position with physics position
+    characterRef.current.position.y = physicsPosition.y;
+
+    // Create direction vector for horizontal movement
     const directionVector = new THREE.Vector3(
-      moveDirection.x, 
-      moveDirection.y, 
-      movementConstraints.lockZ ? 0 : moveDirection.z // Force Z to 0 if locked
+      moveDirection.x,
+      0, // Y movement now handled by physics
+      movementConstraints.lockZ ? 0 : moveDirection.z
     );
-    
+
     // Only normalize if there's actual movement
     const isMoving = directionVector.length() > 0;
+
+    if (isMoving) {
+      directionVector.normalize();
+      
+      // Apply movement to X and Z
+      const finalDirection = directionVector.clone();
+      finalDirection.multiplyScalar(speed * delta);
+      
+      // Update position for X and Z only
+      characterRef.current.position.x += finalDirection.x;
+      characterRef.current.position.z += finalDirection.z;
+
+      // Update physics body position
+      physicsBodyRef.current.setPosition(characterRef.current.position);
+    }
     
     // Add debug logging to track movement state
     if (debug && Math.random() < 0.01) {
@@ -775,7 +852,8 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
         directionVector,
         isMoving,
         currentAnimation,
-        isShooting
+        isShooting,
+        physicsState: physicsBodyRef.current.getState()
       });
     }
     
@@ -839,15 +917,53 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       setFacingDirection(shouldFaceRight ? 'right' : 'left');
       
       // Only change animations if no manual animation is active or if we're already in a movement animation
-      if (!isManualAnimationActive || ['RifleRun', 'Backwards Rifle Run', 'RifleIdle', 'RifleJump'].includes(currentAnimation || '')) {
-        // Play the appropriate running animation
-        if (isMovingOppositeToAiming && actions && actions['Backwards Rifle Run']) {
-          if (currentAnimation !== 'Backwards Rifle Run') {
-            playAnimation('Backwards Rifle Run');
+      if (!isManualAnimationActive) {
+        const physicsState = physicsBodyRef.current.getState();
+        const isInAir = !physicsState.grounded;
+        const wasJustOnGround = physicsState.lastJumpTime < 0.1; // Check if we just left the ground
+
+        // Handle jump/air state first
+        if (isInAir) {
+          // Only play the jump animation once when first leaving the ground
+          if (wasJustOnGround && actions['RifleJump'] && currentAnimation !== 'RifleJump') {
+            playAnimation('RifleJump');
           }
-        } else if (actions && actions['RifleRun']) {
-          if (currentAnimation !== 'RifleRun') {
-            playAnimation('RifleRun');
+        }
+        // Only handle run/idle animations when on the ground
+        else if (!isInAir) {
+          // We just landed - ensure we're not stuck in jump animation
+          if (currentAnimation === 'RifleJump') {
+            if (isMoving) {
+              // Land into run
+              if (isMovingOppositeToAiming && actions['Backwards Rifle Run']) {
+                playAnimation('Backwards Rifle Run');
+              } else if (actions['RifleRun']) {
+                playAnimation('RifleRun');
+              }
+            } else {
+              // Land into idle
+              if (actions['RifleIdle'] && !isShooting) {
+                playAnimation('RifleIdle');
+              }
+            }
+          } 
+          // Normal ground movement
+          else if (isMoving) {
+            // Play the appropriate running animation
+            if (isMovingOppositeToAiming && actions['Backwards Rifle Run']) {
+              if (currentAnimation !== 'Backwards Rifle Run') {
+                playAnimation('Backwards Rifle Run');
+              }
+            } else if (actions['RifleRun']) {
+              if (currentAnimation !== 'RifleRun') {
+                playAnimation('RifleRun');
+              }
+            }
+          } else if (actions['RifleIdle'] && !isShooting) {
+            // Only switch to idle if we're not shooting and not in a special animation
+            if (['RifleRun', 'Backwards Rifle Run', 'RifleJump'].includes(currentAnimation || '')) {
+              playAnimation('RifleIdle');
+            }
           }
         }
       }
@@ -1146,6 +1262,10 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // Make debug info available globally for the UI
     // @ts-ignore - Adding to window for debugging
     window.characterDebug = debugInfo;
+
+    // Expose the physics body reference for other components like HUD
+    // @ts-ignore - Adding to window for debugging
+    window.physicsBodyRef = physicsBodyRef.current;
   }, [debugInfo]);
   
   // Make animation interface available globally
@@ -1875,6 +1995,38 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     return () => window.removeEventListener('keydown', toggleFiringMode);
   }, [debug, stopAutomaticFire, weaponConfig.isAutomatic]);
   
+  // Handle mouse for right-click jet pack
+  useEffect(() => {
+    const handleJetMouseDown = (event: MouseEvent) => {
+      if (event.button === 2) { // Right mouse button
+        console.log('Right-click detected - activating jet pack');
+        setMoveDirection(prev => ({ ...prev, jet: true }));
+      }
+    };
+    
+    const handleJetMouseUp = (event: MouseEvent) => {
+      if (event.button === 2) { // Right mouse button
+        console.log('Right-click released - deactivating jet pack');
+        setMoveDirection(prev => ({ ...prev, jet: false }));
+      }
+    };
+    
+    // Prevent context menu on right click
+    const handleContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    
+    window.addEventListener('mousedown', handleJetMouseDown);
+    window.addEventListener('mouseup', handleJetMouseUp);
+    window.addEventListener('contextmenu', handleContextMenu);
+    
+    return () => {
+      window.removeEventListener('mousedown', handleJetMouseDown);
+      window.removeEventListener('mouseup', handleJetMouseUp);
+      window.removeEventListener('contextmenu', handleContextMenu);
+    };
+  }, []);
+  
   useImperativeHandle(ref, () => ({
     characterRef: characterRef.current,
     playAnimation: playAnimation,
@@ -1894,6 +2046,37 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       {/* Render the rifle as a separate primitive */}
       {rifleRef.current && (
         <primitive object={rifleRef.current} />
+      )}
+      
+      {/* Add Jet Fuel HUD */}
+      {physicsBodyRef.current && (
+        <group position={[1.5, 1, 0]}>
+          <mesh position={[0, 0, -5]} rotation={[0, 0, 0]}>
+            <planeGeometry args={[0.6, 0.1]} />
+            <meshBasicMaterial color="gray" transparent opacity={0.7} />
+          </mesh>
+          <mesh 
+            position={[-(0.3 - (physicsBodyRef.current.getFuelPercentage() / 100 * 0.3)), 0, -4.9]} 
+            scale={[physicsBodyRef.current.getFuelPercentage() / 100, 1, 1]}
+          >
+            <planeGeometry args={[0.6, 0.08]} />
+            <meshBasicMaterial 
+              color={physicsBodyRef.current.isJetActive() ? "#ff3030" : "#30c0ff"} 
+              transparent 
+              opacity={0.9} 
+            />
+          </mesh>
+          {/* Show a small "JET" label above the fuel gauge */}
+          {debug && (
+            <group position={[0, 0.12, -4.9]}>
+              <mesh>
+                <planeGeometry args={[0.3, 0.08]} />
+                <meshBasicMaterial color="black" transparent opacity={0.5} />
+              </mesh>
+              {/* Text geometry not needed, we'll just use a label that appears in debug mode */}
+            </group>
+          )}
+        </group>
       )}
       
       {/* Debug visualization for aiming direction - Always show when debug is true */}

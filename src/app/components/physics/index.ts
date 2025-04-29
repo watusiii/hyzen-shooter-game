@@ -5,4 +5,5 @@
 // - Collision detection utilities
 // - Physics visualizations for debugging
 
-export {}; 
+export * from './core/PhysicsConstants';
+export * from './core/PhysicsBody'; 
