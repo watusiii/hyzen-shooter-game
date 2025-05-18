@@ -1848,6 +1848,47 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // Eject a shell casing
     ejectShell();
     
+    // SPAWN PROJECTILE
+    // Get position and direction for the projectile
+    if (muzzleRef.current) {
+      // Use muzzle position for projectile spawn
+      const muzzlePosition = new THREE.Vector3();
+      muzzleRef.current.getWorldPosition(muzzlePosition);
+      
+      // Calculate direction based on world mouse position
+      // This creates a vector pointing from muzzle to mouse position
+      const direction = new THREE.Vector3();
+      direction.subVectors(worldMousePosition, muzzlePosition).normalize();
+      
+      // Add some random spread based on recoil
+      const spread = currentRecoilRef.current * 0.02; // Convert recoil to spread amount
+      direction.x += (Math.random() - 0.5) * spread;
+      direction.y += (Math.random() - 0.5) * spread;
+      
+      // Access the global projectile spawner
+      // @ts-ignore - Using window for debugging
+      if (window.spawnProjectile) {
+        // @ts-ignore - Using window for debugging
+        window.spawnProjectile({
+          initialPosition: muzzlePosition,
+          initialVelocity: direction,
+          speed: 50, // Bullets are fast!
+          lifetime: 5.0, // Longer lifetime for better visibility
+          size: 0.2, // Larger size for visibility
+          gravity: PHYSICS.GRAVITY * 0.02 // Very reduced gravity effect for bullets
+        });
+        
+        if (debug) {
+          console.log('Spawned projectile:', {
+            position: muzzlePosition,
+            direction: direction,
+          });
+        }
+      } else if (debug) {
+        console.warn('ProjectileManager not initialized yet');
+      }
+    }
+    
     // Hide muzzle flash after a short delay
     setTimeout(() => {
       setMuzzleFlashVisible(false);
@@ -1863,7 +1904,9 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     weaponConfig.fireRate, 
     weaponConfig.maxRecoil, 
     weaponConfig.muzzleFlashDuration, 
-    weaponConfig.recoil
+    weaponConfig.recoil,
+    worldMousePosition,
+    debug
   ]);
 
   // Function to stop automatic fire

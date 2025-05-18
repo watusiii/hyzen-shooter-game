@@ -6,4 +6,5 @@
 // - Physics visualizations for debugging
 
 export * from './core/PhysicsConstants';
-export * from './core/PhysicsBody'; 
+export * from './core/PhysicsBody';
+export * from './core/Projectile'; 

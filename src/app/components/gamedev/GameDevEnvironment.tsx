@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import CharacterController, { CharacterControllerRef } from './CharacterController';
 import SideViewCamera from './SideViewCamera';
 import { HUD } from '../hud';
+import ProjectileManager from './ProjectileManager';
 
 // Simple debug panel for our development environment
 const DebugPanel = ({ children }: { children: React.ReactNode }) => {
@@ -213,24 +214,47 @@ const CharacterDebugInfo = () => {
 const Environment = () => {
   return (
     <>
+      {/* Dark background sky */}
+      <color attach="background" args={['#050A24']} />
+      
+      {/* Add fog for depth and atmosphere */}
+      <fog attach="fog" args={['#050A24', 15, 60]} />
+      
       {/* Lights */}
-      <ambientLight intensity={0.5} />
-      <directionalLight position={[10, 10, 5]} intensity={1} />
+      <ambientLight intensity={0.3} /> {/* Reduced ambient for darker feel */}
+      <directionalLight position={[10, 10, 5]} intensity={0.8} castShadow />
+      <spotLight 
+        position={[0, 10, 0]} 
+        intensity={0.5} 
+        castShadow 
+        penumbra={0.8} 
+        angle={0.6}
+      />
       
       {/* Reference grid */}
       <Grid 
         args={[20, 20]} 
         cellSize={1} 
         cellThickness={0.6} 
-        cellColor="#6f6f6f"
+        cellColor="#444444"
         sectionSize={5}
         sectionThickness={1.2}
-        sectionColor="#9d4b4b"
+        sectionColor="#6d3434"
         fadeDistance={30}
         fadeStrength={1}
         followCamera={false}
         infiniteGrid={true}
       />
+      
+      {/* Add a simple ground plane with dark material */}
+      <mesh 
+        rotation={[-Math.PI / 2, 0, 0]} 
+        position={[0, -0.01, 0]} 
+        receiveShadow
+      >
+        <planeGeometry args={[100, 100]} />
+        <meshStandardMaterial color="#111111" />
+      </mesh>
     </>
   );
 };
@@ -405,6 +429,9 @@ const Scene = () => {
         debug={true}
       />
       
+      {/* Add ProjectileManager for bullet rendering and physics */}
+      <ProjectileManager debug={true} />
+      
       {/* New camera controller component */}
       {useSideCamera && <CameraController characterRef={characterRef} />}
     </>
@@ -443,6 +470,11 @@ const GameDevEnvironment = () => {
           fov: 50,
           near: 0.1,
           far: 1000
+        }}
+        gl={{
+          antialias: true,
+          toneMapping: THREE.ACESFilmicToneMapping,
+          outputColorSpace: THREE.SRGBColorSpace
         }}
       >
         <Scene />
