@@ -124,28 +124,28 @@ const ProjectileManager: React.FC<ProjectileManagerProps> = ({
         castShadow
         receiveShadow
       >
-        {/* Bullet geometry - LARGER bullet shape, pre-rotated to align with direction of travel */}
-        <cylinderGeometry args={[0.08, 0.08, 0.4, 8]} />
+        {/* Bullet geometry - slightly tapered cylinder for better trail effect */}
+        <cylinderGeometry args={[0.05, 0.12, 1, 8]} />
         
-        {/* Bullet material - much more visible appearance */}
+        {/* Bullet material with bright glowing trail effect */}
         <meshStandardMaterial 
-          color="#ffff00" 
-          emissive="#ff8800"
-          emissiveIntensity={2}
-          metalness={0.8}
+          color="#ffbb00" 
+          emissive="#ff5500"
+          emissiveIntensity={4}
+          metalness={0.4}
           roughness={0.2}
+          transparent={true}
+          opacity={0.9}
         />
       </instancedMesh>
       
-      {/* Add trail effect for bullets */}
-      {debug && (
-        <pointLight 
-          color="#ff6600" 
-          intensity={2}
-          distance={10}
-          position={[0, 5, 0]}
-        />
-      )}
+      {/* Add overall lighting effect to enhance bullets */}
+      <pointLight 
+        color="#ff6600" 
+        intensity={0.8}
+        distance={15}
+        position={[0, 5, 0]}
+      />
     </>
   );
 };

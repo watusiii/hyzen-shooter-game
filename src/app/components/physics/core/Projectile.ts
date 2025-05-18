@@ -62,7 +62,10 @@ export class Projectile {
       return false;
     }
     
-    // Apply gravity to velocity
+    // Store previous velocity for trajectory calculation
+    const previousVelocity = this.velocity.clone();
+    
+    // Apply gravity to velocity - increased effect
     this.velocity.y += this.gravity * deltaTime;
     
     // Apply velocity to position
@@ -81,6 +84,7 @@ export class Projectile {
     // Occasional position logging (about once per second)
     if (Math.random() < deltaTime * 0.5) {
       console.log(`Projectile at: [${this.position.x.toFixed(2)}, ${this.position.y.toFixed(2)}, ${this.position.z.toFixed(2)}]`);
+      console.log(`Velocity: [${this.velocity.x.toFixed(2)}, ${this.velocity.y.toFixed(2)}, ${this.velocity.z.toFixed(2)}]`);
     }
     
     return true;
@@ -93,9 +97,8 @@ export class Projectile {
     // Create a rotation that points the projectile in the direction of travel
     const quat = new THREE.Quaternion();
     if (this.velocity.lengthSq() > 0) {
-      // Create a rotation based on velocity direction
-      // Use a forward vector that matches the orientation of our geometry
-      // For a cylinder, we want the Y axis to align with direction of travel
+      // Create a rotation based on current velocity direction (including gravity effect)
+      // This makes the projectile point downward as it falls
       const forward = new THREE.Vector3(0, 1, 0);
       forward.normalize();
       
@@ -103,12 +106,27 @@ export class Projectile {
       quat.setFromUnitVectors(forward, direction);
     }
     
+    // Calculate trail length based on velocity
+    // Faster bullets have longer trails
+    const speed = this.velocity.length();
+    const trailLength = Math.min(6.0, speed * 0.15); // Reduced max length and scale factor
+    
+    // Offset the position slightly backward so the trail appears behind the projectile
+    // First get the normalized negative velocity direction
+    const trailDirection = this.velocity.clone().normalize().negate();
+    
+    // Create an offset that's a fraction of the trail length
+    const trailOffset = trailDirection.clone().multiplyScalar(trailLength * 0.3 * this.size);
+    
+    // Apply this offset to create a position for the trail
+    const trailPosition = this.position.clone().add(trailOffset);
+    
     // Set transform matrix with position, rotation and scale
-    // Use a more elongated shape for the bullet
+    // Scale Y (length) based on velocity to create stretching effect
     matrix.compose(
-      this.position,
+      trailPosition, // Use the offset position for better trail appearance
       quat,
-      new THREE.Vector3(this.size, this.size * 3, this.size) // Make bullets more elongated
+      new THREE.Vector3(this.size, this.size * trailLength, this.size)
     );
     
     return matrix;

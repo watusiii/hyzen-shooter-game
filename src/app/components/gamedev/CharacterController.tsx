@@ -197,7 +197,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
   // Add weapon configuration state
   const [weaponConfig, setWeaponConfig] = useState({
     isAutomatic: true,
-    fireRate: 10, // Shots per second
+    fireRate: 5, // Shots per second
     muzzleFlashDuration: 50, // ms
     recoil: 0.02,
     maxRecoil: 0.1,
@@ -1851,14 +1851,26 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
     // SPAWN PROJECTILE
     // Get position and direction for the projectile
     if (muzzleRef.current) {
-      // Use muzzle position for projectile spawn
-      const muzzlePosition = new THREE.Vector3();
-      muzzleRef.current.getWorldPosition(muzzlePosition);
+      // Get character position first
+      const characterPosition = characterRef.current?.position.clone() || new THREE.Vector3();
+      
+      // Calculate a spawn position in front of the character 
+      // based on character's facing direction
+      const spawnOffset = new THREE.Vector3();
+      const facingDirectionVector = facingDirection === 'right' ? 
+        new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0);
+      
+      // Add offset in facing direction and raise slightly to shoulder height
+      spawnOffset.copy(facingDirectionVector).multiplyScalar(1.0); // 1 unit in front
+      spawnOffset.y = 3; // Raised to chest/shoulder height
+      
+      // Create spawn position by adding offset to character position
+      const spawnPosition = characterPosition.clone().add(spawnOffset);
       
       // Calculate direction based on world mouse position
-      // This creates a vector pointing from muzzle to mouse position
+      // This creates a vector pointing from spawn position to mouse position
       const direction = new THREE.Vector3();
-      direction.subVectors(worldMousePosition, muzzlePosition).normalize();
+      direction.subVectors(worldMousePosition, spawnPosition).normalize();
       
       // Add some random spread based on recoil
       const spread = currentRecoilRef.current * 0.02; // Convert recoil to spread amount
@@ -1870,17 +1882,17 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
       if (window.spawnProjectile) {
         // @ts-ignore - Using window for debugging
         window.spawnProjectile({
-          initialPosition: muzzlePosition,
+          initialPosition: spawnPosition,
           initialVelocity: direction,
-          speed: 50, // Bullets are fast!
-          lifetime: 5.0, // Longer lifetime for better visibility
-          size: 0.2, // Larger size for visibility
-          gravity: PHYSICS.GRAVITY * 0.02 // Very reduced gravity effect for bullets
+          speed: 80, // Fast bullets
+          lifetime: 3.0, // 3 second lifetime
+          size: 0.15, // Bullet size
+          gravity: PHYSICS.GRAVITY * 1.0 // Full gravity effect for nice arc
         });
         
         if (debug) {
           console.log('Spawned projectile:', {
-            position: muzzlePosition,
+            position: spawnPosition,
             direction: direction,
           });
         }
@@ -2148,6 +2160,19 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
                 characterRef.current?.position.z || 0
               );
             }
+
+            // Calculate bullet spawn position
+            const characterPosition = characterRef.current?.position.clone() || new THREE.Vector3();
+            const spawnOffset = new THREE.Vector3();
+            const facingDirectionVector = facingDirection === 'right' ? 
+              new THREE.Vector3(1, 0, 0) : new THREE.Vector3(-1, 0, 0);
+            
+            // Add offset in facing direction and raise slightly to shoulder height
+            spawnOffset.copy(facingDirectionVector).multiplyScalar(1.0); // 1 unit in front
+            spawnOffset.y =3; // Raised to chest/shoulder height
+            
+            // Create spawn position by adding offset to character position
+            const bulletSpawnPosition = characterPosition.clone().add(spawnOffset);
             
             // Add debug sphere at start position
             return (
@@ -2158,16 +2183,22 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
                   <meshBasicMaterial color="red" />
                 </mesh>
                 
-                {/* Line from muzzle to aim point */}
+                {/* Green dot at bullet spawn position */}
+                <mesh position={bulletSpawnPosition}>
+                  <sphereGeometry args={[0.15, 8, 8]} />
+                  <meshBasicMaterial color="green" />
+                </mesh>
+                
+                {/* Line from bullet spawn to aim point */}
                 <line>
                   <bufferGeometry>
                     <float32BufferAttribute
                       attach="attributes-position"
                       args={[
                         new Float32Array([
-                          startPosition.x, 
-                          startPosition.y, 
-                          startPosition.z,
+                          bulletSpawnPosition.x, 
+                          bulletSpawnPosition.y, 
+                          bulletSpawnPosition.z,
                           worldMousePosition.x,
                           worldMousePosition.y,
                           worldMousePosition.z
@@ -2176,7 +2207,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
                       ]}
                     />
                   </bufferGeometry>
-                  <lineBasicMaterial color="red" linewidth={2} />
+                  <lineBasicMaterial color="green" linewidth={2} />
                 </line>
 
                 {/* Add a sphere at the aim point */}
@@ -2195,7 +2226,7 @@ const CharacterController: ForwardRefRenderFunction<CharacterControllerRef, Char
                     return (
                       <mesh position={ejectorPosition}>
                         <sphereGeometry args={[0.05, 16, 16]} />
-                        <meshBasicMaterial color="green" />
+                        <meshBasicMaterial color="yellow" />
                       </mesh>
                     );
                   })()
